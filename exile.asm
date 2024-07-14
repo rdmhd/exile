@@ -211,73 +211,11 @@ main_loop:
 	mov edx, 32
 	syscall
 	movzx eax, m8 [rsp] ; load event id
-	; handle keypress event
-	cmp eax, 2
-	jne main_loop_expose
-	movzx eax, m8 [rsp+1] ; read keycode
-	cmp eax, 0x18 ; is it 'Q'
-	jne main_loop_not_q
-	jmp exit
-main_loop_not_q:
-	cmp eax, 0x72 ; is it right arrow key
-	jne main_loop_not_right
-	movzx ebx, m8 [char_x]
-	cmp ebx, 19
-	je main_loop ; don't move if at max x coordinate
-	movzx ecx, m8 [char_y]
-	mov eax, ebx
-	inc eax
-	mov m8 [char_x], al
-	call clear_cell
-	call draw_char
-	jmp main_loop_draw
-main_loop_not_right:
-	cmp eax, 0x74 ; is it down arrow key
-	jne main_loop_not_down
-	movzx ecx, m8 [char_y]
-	cmp ecx, 14
-	je main_loop ; don't move if at max y coordinate
-	movzx ebx, m8 [char_x]
-	mov eax, ecx
-	inc eax
-	mov m8 [char_y], al
-	call clear_cell
-	call draw_char
-	jmp main_loop_draw
-main_loop_not_down:
-	cmp eax, 0x71 ; is it left arrow key
-	jne main_loop_not_left
-	movzx ebx, m8 [char_x]
-	test ebx, ebx
-	jz main_loop ; don't move if at min x coordinate
-	movzx ecx, m8 [char_y]
-	mov eax, ebx
-	dec eax
-	mov m8 [char_x], al
-	call clear_cell
-	call draw_char
-	jmp main_loop_draw
-main_loop_not_left:
-	cmp eax, 0x6f ; is it up arrow key
-	jne main_loop_not_up
-	movzx ecx, m8 [char_y]
-	test ecx, ecx
-	jz main_loop ; don't move if at min y coordinate
-	movzx ebx, m8 [char_x]
-	mov eax, ecx
-	dec eax
-	mov m8 [char_y], al
-	call clear_cell
-	call draw_char
-	jmp main_loop_draw
-main_loop_not_up:
-	jmp main_loop
-	; handle expose event
-main_loop_expose:
-	cmp eax, 12
-	je main_loop_draw
-main_loop_what_even_is_this_event:
-	cmp eax, 161
+	cmp eax, 2 ; keypress event?
+	je process_keydown
+	cmp eax, 12 ; expose event?
+	je refresh_screen
+	cmp eax, 161 ; what is this event?
 	jne main_loop
 	mov eax, [rsp+8]
 	mov ebx, [change_wm_protocols_property]
@@ -288,7 +226,8 @@ main_loop_what_even_is_this_event:
 	cmp eax, ebx
 	jne main_loop
 	jmp exit
-main_loop_draw:
+
+refresh_screen:
 	; write put image request
 	mov eax, 1
 	mov edi, r12d
@@ -296,6 +235,48 @@ main_loop_draw:
 	mov edx, 691228
 	syscall
 	jmp main_loop
+
+process_keydown:
+	movzx eax, m8 [rsp+1] ; read keycode
+	cmp eax, 0x18 ; is it 'Q'
+	je exit
+	cmp eax, 0x72 ; is it right arrow key
+	je process_keydown__move_right
+	cmp eax, 0x2e ; is it 'l' key
+	je process_keydown__move_right
+	cmp eax, 0x74 ; is it down arrow key
+	je process_keydown__move_down
+	cmp eax, 0x2c ; is it 'j' key
+	je process_keydown__move_down
+	cmp eax, 0x71 ; is it left arrow key
+	je process_keydown__move_left
+	cmp eax, 0x2b ; is it 'h' key
+	je process_keydown__move_left
+	cmp eax, 0x6f ; is it up arrow key
+	je process_keydown__move_up
+	cmp eax, 0x2d ; is it 'k' key
+	je process_keydown__move_up
+	jmp main_loop
+process_keydown__move_right:
+	mov ebx, 1
+	xor ecx, ecx
+	call move_char
+	jmp refresh_screen
+process_keydown__move_down:
+	xor ebx, ebx
+	mov ecx, 1
+	call move_char
+	jmp refresh_screen
+process_keydown__move_left:
+	mov ebx, -1
+	xor ecx, ecx
+	call move_char
+	jmp refresh_screen
+process_keydown__move_up:
+	xor ebx, ebx
+	mov ecx, -1
+	call move_char
+	jmp refresh_screen
 
 exit_error:
 	mov eax, 60
@@ -362,6 +343,26 @@ clear_cell_column:
 	add rdi, 1920
 	dec ebx
 	jnz clear_cell_row
+	ret
+
+; @ebx: delta x
+; @ecx: delta y
+move_char:
+	movzx eax, m8 [char_x]
+	movzx edx, m8 [char_y]
+	add ebx, eax
+	add ecx, edx
+	cmp ebx, 20
+	jae move_char_done
+	cmp ecx, 15
+	jae move_char_done
+	mov [char_x], bl
+	mov [char_y], cl
+	mov ebx, eax
+	mov ecx, edx
+	call clear_cell
+	call draw_char
+move_char_done:
 	ret
 
 xauth:

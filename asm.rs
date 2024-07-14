@@ -10,7 +10,7 @@ struct Addr<'a> {
     base: Option<u32>,
     index: Option<u32>,
     scale: u32,
-    disp: u32,
+    disp: u64,
     label: Option<(&'a str, usize)>,
 }
 
@@ -20,8 +20,8 @@ enum Op<'a> {
     Reg32(u32),
     Reg64(u32),
     One, // immediate 1
-    Imm8(u32),
-    Imm32(u32),
+    Imm8(u64),
+    Imm32(u64),
     Mem(Addr<'a>),
     Mem8(Addr<'a>),
     Mem16(Addr<'a>),
@@ -31,7 +31,7 @@ enum Op<'a> {
 }
 
 impl Op<'_> {
-    fn imm(self) -> u32 {
+    fn imm(self) -> u64 {
         match self {
             Op::Imm8(imm) => imm,
             Op::Imm32(imm) => imm,
@@ -102,10 +102,10 @@ pub struct Error {
 }
 
 struct Patch<'a> {
-    off: u64,
+    off: i64,
     label: &'a str,
     at: usize,
-    disp: u32,
+    disp: i32,
 }
 
 #[derive(Debug)]
@@ -347,7 +347,7 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
                         out.extend(opcodes);
                         let idx = out.len() - 1;
                         *unsafe { out.get_unchecked_mut(idx) } += reg as u8;
-                        emit32(op2.imm(), out);
+                        emit32(op2.imm() as u32, out);
                     }
                     Enc::RM => {
                         let reg = match op1 {
@@ -413,7 +413,7 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
 
                         match op3 {
                             Op::Imm8(imm) => out.push(imm as u8),
-                            Op::Imm32(imm) => emit32(imm, out),
+                            Op::Imm32(imm) => emit32(imm as u32, out),
                             _ => panic!(),
                         }
                     }
@@ -465,7 +465,7 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
                             _ => panic!(),
                         }
 
-                        emit32(op2.imm(), out);
+                        emit32(op2.imm() as u32, out);
                     }
                     Enc::M | Enc::M1 => {
                         if rex != 0 {
@@ -500,7 +500,7 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
                         } else {
                             emit32(0, out);
                             patches.push(Patch {
-                                off: out.len() as u64,
+                                off: out.len() as i64,
                                 label,
                                 at,
                                 disp: 0,
@@ -539,13 +539,13 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
 
     for patch in patches {
         let mut disp = patch.disp;
-        if let Some(addr) = labels.get(patch.label) {
-            disp += (addr - patch.off) as u32; // TODO: check that it fits within u32
+        if let Some(&addr) = labels.get(patch.label) {
+            disp += (addr as i64 - patch.off as i64) as i32; // TODO: check that it fits within i32
 
             // TODO: this assumes that the displacement is always 32-bits, for enabling disp8
             // the offset will need to be stored with the patch
             unsafe {
-                (out.as_mut_ptr().add(patch.off as usize - 4) as *mut u32).write_unaligned(disp);
+                (out.as_mut_ptr().add(patch.off as usize - 4) as *mut i32).write_unaligned(disp);
             };
         } else {
             return error_at(patch.at, "missing label");
@@ -583,6 +583,8 @@ fn choose_instruction(mnemonic: &str, op1: &Op, op2: &Op, op3: &Op) -> Option<In
             => (Enc::MI, 0, 0, &[0x81]),
         ("add", Op::Reg64(_), Op::Imm32(_) | Op::Imm8(_) | Op::One, Op::None)
             => (Enc::MI, REX_W, 0, &[0x81]),
+        ("add", Op::Reg32(_), Op::Reg32(_), Op::None)
+            => (Enc::MR, 0, 0, &[0x01]),
         ("add", Op::Reg64(_), Op::Reg64(_), Op::None)
             => (Enc::MR, REX_W, 0, &[0x01]),
         ("call", Op::Rel32(_), Op::None, Op::None)
@@ -603,6 +605,8 @@ fn choose_instruction(mnemonic: &str, op1: &Op, op2: &Op, op3: &Op) -> Option<In
             => (Enc::ZO, 0, 0, &[0xcc]),
         ("jmp", Op::Rel32(_), Op::None, Op::None)
             => (Enc::D, 0, 0, &[0xe9]),
+        ("jae", Op::Rel32(_), Op::None, Op::None)
+            => (Enc::D, 0, 0, &[0x0f, 0x83]),
         ("je", Op::Rel32(_), Op::None, Op::None)
             => (Enc::D, 0, 0, &[0x0f, 0x84]),
         ("jz", Op::Rel32(_), Op::None, Op::None)
@@ -724,10 +728,10 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
         "i32" => {
             if let Some(int) = match_integer(cur)? {
                 // TODO: check that int fits into a word
-                emit32(int, out);
+                emit32s(int as i32, out);
                 skip_whitespace(cur);
                 while let Some(int) = match_integer(cur)? {
-                    emit32(int, out);
+                    emit32s(int as i32, out);
                     skip_whitespace(cur);
                 }
             } else {
@@ -804,18 +808,18 @@ fn match_identifier<'a>(cur: &mut Cursor, input: &'a str) -> Option<(&'a str, us
     }
 }
 
-fn match_integer(cur: &mut Cursor) -> Result<Option<u32>, Error> {
+fn match_integer(cur: &mut Cursor) -> Result<Option<u64>, Error> {
     if cur.char == '0' {
         advance(cur);
 
         if cur.char == 'x' {
             advance(cur);
 
-            fn parse_hexdigit(char: char) -> Option<u32> {
+            fn parse_hexdigit(char: char) -> Option<u64> {
                 if char >= '0' && char <= '9' {
-                    Some(char as u32 - '0' as u32)
+                    Some(char as u64 - '0' as u64)
                 } else if char >= 'a' && char <= 'f' {
-                    Some(char as u32 - 'a' as u32 + 10)
+                    Some(char as u64 - 'a' as u64 + 10)
                 } else {
                     None
                 }
@@ -835,16 +839,16 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<u32>, Error> {
         } else {
             let mut int = 0;
             while cur.char >= '0' && cur.char <= '9' {
-                int = int * 10 + (cur.char as u32 - '0' as u32);
+                int = int * 10 + (cur.char as u64 - '0' as u64);
                 advance(cur);
             }
             Ok(Some(int))
         }
     } else if cur.char >= '1' && cur.char <= '9' {
-        let mut int = cur.char as u32 - '0' as u32;
+        let mut int = cur.char as u64 - '0' as u64;
         advance(cur);
         while cur.char >= '0' && cur.char <= '9' {
-            int = int * 10 + (cur.char as u32 - '0' as u32);
+            int = int * 10 + (cur.char as u64 - '0' as u64);
             advance(cur);
         }
         Ok(Some(int))
@@ -899,6 +903,16 @@ fn match_operand<'a>(cur: &mut Cursor, input: &'a str) -> Result<Option<Op<'a>>,
         }
     } else if match_char('[', cur) {
         Ok(Some(Op::Mem(expect_address(cur, input)?)))
+    } else if match_char('-', cur) {
+        if let Some(imm) = match_integer(cur)? {
+            if imm <= 0xff {
+                Ok(Some(Op::Imm8(-(imm as i64) as u64)))
+            } else {
+                Ok(Some(Op::Imm32(-(imm as i64) as u64)))
+            }
+        } else {
+            error_at(cur.off, "expected integer literal")
+        }
     } else {
         Ok(None)
     }
@@ -909,7 +923,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
     let mut base = None;
     let mut index = None;
     let mut scale: u32 = 1;
-    let mut disp: u32 = 0;
+    let mut disp: u64 = 0;
 
     loop {
         skip_whitespace(cur);
@@ -936,7 +950,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
                         }
 
                         index = Some(reg);
-                        scale = int;
+                        scale = int as u32;
                     } else {
                         return error_at(cur.off, "expected scale");
                     }
@@ -955,7 +969,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
                 label = Some((ident, at));
             }
         } else if let Some(int) = match_integer(cur)? {
-            disp += int; // TODO: check for overflow
+            disp += int as u64; // TODO: check for overflow
         } else {
             return error_at(cur.off, "expected address component");
         }
@@ -1067,14 +1081,14 @@ fn emit_modrm<'a>(reg: u32, rm: Op<'a>, out: &mut Vec<u8>, patches: &mut Vec<Pat
             }
 
             if has_disp {
-                emit32(addr.disp, out);
+                emit32(addr.disp as u32, out);
 
                 if let Some((label, at)) = addr.label {
                     patches.push(Patch {
-                        off: out.len() as u64,
+                        off: out.len() as i64,
                         label,
                         at,
-                        disp: addr.disp,
+                        disp: addr.disp as i32,
                     });
                 }
             }

@@ -61,7 +61,6 @@ syscall
 
 ; read connection request reply
 sub rsp, 8276 ; TODO: should get this from the response
-
 xor eax, eax
 mov edi, r12d
 mov rsi, rsp
@@ -69,12 +68,8 @@ mov edx, 8276
 syscall
 
 ; zero first byte of the reply indicates connection failure
-movzx eax, m8 [rsp]
-test eax, eax
-jz exit_error
-; TODO: replace with the following when the assembler is capable of generating the cmp
-;cmp m8 [rsp], 0
-;je exit_error
+cmp m8 [rsp], 0
+je exit_error
 
 ; store gc id
 mov eax, [rsp+12]
@@ -310,7 +305,7 @@ draw_char_1:
 	mov m32 [rdi+1920], 0xffffffff
 	mov m32 [rdi+1920+4], 0xffffffff
 draw_char_2:
-	add rdi, 8 ; TODO: shift?
+	add rdi, 8
 	dec edx
 	jnz draw_char_3
 	add rdi, 3744 ; move down 2 lines in the screen buffer

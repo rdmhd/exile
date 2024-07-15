@@ -10,13 +10,15 @@ struct Addr<'a> {
     base: Option<u32>,
     index: Option<u32>,
     scale: u32,
-    disp: u64,
+    disp: i64,
     label: Option<(&'a str, usize)>,
 }
 
-enum Op<'a> {
+enum Arg<'a> {
     None,
+    Eax,
     Reg8(u32),
+    _Reg16(u32),
     Reg32(u32),
     Reg64(u32),
     One, // immediate 1
@@ -30,41 +32,52 @@ enum Op<'a> {
     Rel32((&'a str, usize)),
 }
 
-impl Op<'_> {
-    fn imm(self) -> u64 {
+impl Arg<'_> {
+    fn imm(&self) -> u64 {
         match self {
-            Op::Imm8(imm) => imm,
-            Op::Imm32(imm) => imm,
-            Op::One => 1,
+            Arg::Imm8(imm) => *imm,
+            Arg::Imm32(imm) => *imm,
+            Arg::One => 1,
+            _ => panic!("unhandled imm <{self}>"),
+        }
+    }
+    fn reg(&self) -> u32 {
+        match self {
+            Arg::Eax => 0,
+            Arg::Reg8(reg) => *reg,
+            Arg::Reg32(reg) => *reg,
+            Arg::Reg64(reg) => *reg,
             _ => panic!(),
         }
     }
 }
 
-impl Display for Op<'_> {
+impl Display for Arg<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Op::None => write!(f, "<none>"),
-            Op::Reg8(reg) => write!(f, "r8 {}", REGS8[*reg as usize]),
-            Op::Reg32(reg) => write!(f, "r32 {}", REGS32[*reg as usize]),
-            Op::Reg64(reg) => write!(f, "r64 {}", REGS64[*reg as usize]),
-            Op::One => write!(f, "1 (exact)"),
-            Op::Imm8(imm) => write!(f, "imm8 {imm}"),
-            Op::Imm32(imm) => write!(f, "imm32 {imm}"),
-            Op::Rel32((label, _)) => write!(f, "rel: \"{label}\""),
-            Op::Mem(addr)
-            | Op::Mem8(addr)
-            | Op::Mem16(addr)
-            | Op::Mem32(addr)
-            | Op::Mem64(addr) => write!(
+            Arg::None => write!(f, "<none>"),
+            Arg::Eax => write!(f, "eax"),
+            Arg::Reg8(reg) => write!(f, "r8 ({})", REGS8[*reg as usize]),
+            Arg::_Reg16(_reg) => todo!(),
+            Arg::Reg32(reg) => write!(f, "r32 ({})", REGS32[*reg as usize]),
+            Arg::Reg64(reg) => write!(f, "r64 ({})", REGS64[*reg as usize]),
+            Arg::One => write!(f, "1 (exact)"),
+            Arg::Imm8(imm) => write!(f, "imm8 {imm}"),
+            Arg::Imm32(imm) => write!(f, "imm32 {imm}"),
+            Arg::Rel32((label, _)) => write!(f, "rel: \"{label}\""),
+            Arg::Mem(addr)
+            | Arg::Mem8(addr)
+            | Arg::Mem16(addr)
+            | Arg::Mem32(addr)
+            | Arg::Mem64(addr) => write!(
                 f,
                 "{size} [{base} + {index}*{scale} + {disp} + {label}]",
                 size = match self {
-                    Op::Mem8(_) => "m8",
-                    Op::Mem16(_) => "m16",
-                    Op::Mem32(_) => "m32",
-                    Op::Mem64(_) => "m64",
-                    Op::Mem(_) => "m",
+                    Arg::Mem8(_) => "m8",
+                    Arg::Mem16(_) => "m16",
+                    Arg::Mem32(_) => "m32",
+                    Arg::Mem64(_) => "m64",
+                    Arg::Mem(_) => "m",
                     _ => panic!(),
                 },
                 base = if let Some(base) = addr.base {
@@ -105,7 +118,7 @@ struct Patch<'a> {
     off: i64,
     label: &'a str,
     at: usize,
-    disp: i32,
+    disp: i64,
 }
 
 #[derive(Debug)]
@@ -118,16 +131,40 @@ enum Enc {
     M1,
     D,
     M,
+    // immediate is the second operand (used in cases where the first operand is encoded as part of the opcode)
+    I2,
     RMI,
 }
 
-#[derive(Debug)]
 struct Insn {
+    mnemonic: &'static str,
+    op1: Op,
+    op2: Op,
+    op3: Op,
+    rex: u8,
+    opcodes: &'static [u8],
+    reg: u8,
     encoding: Enc,
-    rex: u32, // 0 for no REX prefix
-    reg: u32, // /r field for ModR/M byte
-    len: u8,  // number of opcodes
-    opcodes: [u8; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Op {
+    None,
+    Eax,
+    R8,
+    _R16,
+    R32,
+    R64,
+    RM8,
+    RM16,
+    RM32,
+    RM64,
+    M,
+    M64,
+    One,
+    Imm8,
+    Imm32,
+    Rel32,
 }
 
 const REGS8: [&str; 4] = ["al", "cl", "dl", "bl"];
@@ -139,10 +176,10 @@ const REGS32: [&str; 16] = [
 
 const REGS64: [&str; 8] = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"];
 
-const REX_W: u32 = 0b0100_1000;
-const REX_R: u32 = 0b0100_0100;
-const _REX_X: u32 = 0b0100_0010;
-const REX_B: u32 = 0b0100_0001;
+const REX_W: u8 = 0b0100_1000;
+const REX_R: u8 = 0b0100_0100;
+const _REX_X: u8 = 0b0100_0010;
+const REX_B: u8 = 0b0100_0001;
 
 fn main() {
     let path = std::env::args().skip(1).next().unwrap_or_else(|| {
@@ -265,7 +302,7 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
 
     advance(&mut cur);
 
-    let mut labels = HashMap::<&str, u64>::new();
+    let mut labels = HashMap::<&str, usize>::new();
     let mut patches = Vec::<Patch>::new();
 
     loop {
@@ -281,33 +318,33 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
         } else if let Some((ident, at)) = match_identifier(&mut cur, &input) {
             if match_char(':', &mut cur) {
                 skip_whitespace(&mut cur);
-                if labels.insert(ident, out.len() as u64).is_some() {
+                if labels.insert(ident, out.len()).is_some() {
                     return error_at(at, "label with this name already exists");
                 }
             } else {
                 skip_whitespace(&mut cur);
 
                 let mnemonic = ident;
-                let mut op1 = Op::None;
-                let mut op2 = Op::None;
-                let mut op3 = Op::None;
+                let mut arg1 = Arg::None;
+                let mut arg2 = Arg::None;
+                let mut arg3 = Arg::None;
 
-                if let Some(op) = match_operand(&mut cur, &input)? {
-                    op1 = op;
+                if let Some(arg) = match_argument(&mut cur, &input)? {
+                    arg1 = arg;
                     skip_whitespace(&mut cur);
 
                     if match_char(',', &mut cur) {
                         skip_whitespace(&mut cur);
-                        if let Some(op) = match_operand(&mut cur, &input)? {
-                            op2 = op;
+                        if let Some(arg) = match_argument(&mut cur, &input)? {
+                            arg2 = arg;
                         } else {
                             return error_at(cur.off, "expected operand after ','");
                         }
 
                         if match_char(',', &mut cur) {
                             skip_whitespace(&mut cur);
-                            if let Some(op) = match_operand(&mut cur, &input)? {
-                                op3 = op;
+                            if let Some(arg) = match_argument(&mut cur, &input)? {
+                                arg3 = arg;
                             } else {
                                 return error_at(cur.off, "expected operand after ','");
                             }
@@ -315,205 +352,20 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
                     }
                 }
 
-                let insn = match choose_instruction(mnemonic, &op1, &op2, &op3) {
-                    Some(insn) => insn,
-                    None => {
-                        println!("{mnemonic} {op1}, {op2}");
-                        return error_at(at, "unknown instruction");
-                    }
-                };
+                //eprintln!("{mnemonic} {op1}, {op2} {op3}");
 
-                //let beg = out.len();
-                //println!("{mnemonic} {op1}, {op2}");
-                //println!("{insn:x?}");
-
-                let mut rex = insn.rex;
-                let opcodes = &insn.opcodes[..insn.len as usize];
-
-                match insn.encoding {
-                    Enc::ZO => out.extend(opcodes),
-                    Enc::OI => {
-                        let Op::Reg32(mut reg) = op1 else { panic!() };
-
-                        if reg >= 8 {
-                            reg -= 8;
-                            rex |= REX_B;
-                        }
-
-                        if rex != 0 {
-                            out.push(rex as u8);
-                        }
-
-                        out.extend(opcodes);
-                        let idx = out.len() - 1;
-                        *unsafe { out.get_unchecked_mut(idx) } += reg as u8;
-                        emit32(op2.imm() as u32, out);
-                    }
-                    Enc::RM => {
-                        let reg = match op1 {
-                            Op::Reg8(reg) | Op::Reg32(reg) | Op::Reg64(reg) => {
-                                if reg >= 8 {
-                                    rex |= REX_R;
-                                    reg - 8
-                                } else {
-                                    reg
-                                }
-                            }
-                            _ => panic!(),
-                        };
-
-                        if let Op::Reg32(reg) = op2 {
-                            if reg >= 8 {
-                                op2 = Op::Reg32(reg - 8);
-                                rex |= REX_B;
-                            }
-                        } else if let Op::Reg64(reg) = op2 {
-                            if reg >= 8 {
-                                op2 = Op::Reg64(reg - 8);
-                                rex |= REX_B;
-                            }
-                        }
-
-                        if rex != 0 {
-                            out.push(rex as u8);
-                        }
-                        out.extend(opcodes);
-                        emit_modrm(reg, op2, out, &mut patches);
-                    }
-                    Enc::RMI => {
-                        let reg = match op1 {
-                            Op::Reg8(reg) | Op::Reg32(reg) | Op::Reg64(reg) => {
-                                if reg >= 8 {
-                                    rex |= REX_R;
-                                    reg - 8
-                                } else {
-                                    reg
-                                }
-                            }
-                            _ => panic!(),
-                        };
-
-                        if let Op::Reg32(reg) = op2 {
-                            if reg >= 8 {
-                                op2 = Op::Reg32(reg - 8);
-                                rex |= REX_B;
-                            }
-                        } else if let Op::Reg64(reg) = op2 {
-                            if reg >= 8 {
-                                op2 = Op::Reg64(reg - 8);
-                                rex |= REX_B;
-                            }
-                        }
-
-                        if rex != 0 {
-                            out.push(rex as u8);
-                        }
-                        out.extend(opcodes);
-                        emit_modrm(reg, op2, out, &mut patches);
-
-                        match op3 {
-                            Op::Imm8(imm) => out.push(imm as u8),
-                            Op::Imm32(imm) => emit32(imm as u32, out),
-                            _ => panic!(),
-                        }
-                    }
-                    Enc::MR => {
-                        if let Op::Reg32(reg) = op1 {
-                            if reg >= 8 {
-                                op1 = Op::Reg32(reg - 8);
-                                rex |= REX_B;
-                            }
-                        } else if let Op::Reg64(reg) = op1 {
-                            if reg >= 8 {
-                                op1 = Op::Reg64(reg - 8);
-                                rex |= REX_B;
-                            }
-                        }
-
-                        let reg = match op2 {
-                            Op::Reg8(reg) | Op::Reg32(reg) | Op::Reg64(reg) => {
-                                if reg >= 8 {
-                                    rex |= REX_R;
-                                    reg - 8
-                                } else {
-                                    reg
-                                }
-                            }
-                            _ => panic!(),
-                        };
-
-                        if rex != 0 {
-                            out.push(rex as u8);
-                        }
-                        out.extend(opcodes);
-                        emit_modrm(reg, op1, out, &mut patches);
-                    }
-                    Enc::MI => {
-                        if rex != 0 {
-                            out.push(rex as u8);
-                        }
-                        out.extend(opcodes);
-
-                        match op1 {
-                            Op::Reg32(rm) | Op::Reg64(rm) => {
-                                let modrm = (0b11 << 6 | insn.reg << 3 | rm) as u8;
-                                out.push(modrm);
-                            }
-                            Op::Mem8(_) | Op::Mem32(_) | Op::Mem64(_) => {
-                                emit_modrm(insn.reg, op1, out, &mut patches);
-                            }
-                            _ => panic!(),
-                        }
-
-                        emit32(op2.imm() as u32, out);
-                    }
-                    Enc::M | Enc::M1 => {
-                        if rex != 0 {
-                            out.push(rex as u8);
-                        }
-                        out.extend(opcodes);
-
-                        match op1 {
-                            Op::Reg32(rm) | Op::Reg64(rm) => {
-                                let modrm = (0b11 << 6 | insn.reg << 3 | rm) as u8;
-                                out.push(modrm);
-                            }
-                            Op::Mem8(_) | Op::Mem32(_) | Op::Mem64(_) => {
-                                emit_modrm(insn.reg, op1, out, &mut patches);
-                            }
-                            _ => panic!(),
-                        }
-                    }
-                    Enc::D => {
-                        if rex != 0 {
-                            out.push(rex as u8);
-                        }
-                        out.extend(opcodes);
-
-                        let Op::Rel32((label, _at)) = op1 else {
-                            panic!()
-                        };
-
-                        if let Some(&off) = labels.get(label) {
-                            let rel = off as isize - (out.len() + 4) as isize;
-                            emit32s(rel as i32, out);
-                        } else {
-                            emit32(0, out);
-                            patches.push(Patch {
-                                off: out.len() as i64,
-                                label,
-                                at,
-                                disp: 0,
-                            });
-                        }
-                    }
+                if let Some(insn) = choose_insn(mnemonic, &arg1, &arg2, &arg3) {
+                    //eprintln!(
+                    //    "  {op1:?} {op2:?} {op3:?} | {enc:?}",
+                    //    op1 = insn.op1,
+                    //    op2 = insn.op2,
+                    //    op3 = insn.op3,
+                    //    enc = insn.encoding,
+                    //);
+                    emit_insn(insn, &arg1, &arg2, &arg3, out, &mut patches, &labels)?;
+                } else {
+                    return error_at(at, "unknown instruction");
                 }
-
-                //println!("  {:02x?}\n", &out[beg..]);
-                //for (idx, &byte) in out[beg..].iter().enumerate() {
-                //    println!("[{idx}] {byte:08b}");
-                //}
-                //println!("-----------------------------------");
             }
         }
 
@@ -540,12 +392,12 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
     for patch in patches {
         let mut disp = patch.disp;
         if let Some(&addr) = labels.get(patch.label) {
-            disp += (addr as i64 - patch.off as i64) as i32; // TODO: check that it fits within i32
+            disp += addr as i64 - patch.off as i64; // TODO: check that it fits within i32
 
             // TODO: this assumes that the displacement is always 32-bits, for enabling disp8
             // the offset will need to be stored with the patch
             unsafe {
-                (out.as_mut_ptr().add(patch.off as usize - 4) as *mut i32).write_unaligned(disp);
+                (out.as_mut_ptr().add(patch.off as usize - 4) as *mut i32).write_unaligned(disp as i32);
             };
         } else {
             return error_at(patch.at, "missing label");
@@ -555,124 +407,136 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
     Ok(())
 }
 
-fn choose_instruction(mnemonic: &str, op1: &Op, op2: &Op, op3: &Op) -> Option<Insn> {
-    #[allow(unreachable_patterns)] // TODO: not sure why this gets triggered
+#[allow(dead_code)]
+#[allow(unused_variables)]
+fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'static Insn> {
+    use self::Op::*;
+
     #[rustfmt::skip]
-    let (encoding, rex, reg, opcodes): (Enc, u32, u32, &[u8]) = match (mnemonic, &op1, &op2, &op3) {
-        ("inc", Op::Mem8{..}, Op::None, Op::None)
-            => (Enc::M, 0, 0, &[0xfe]),
-        ("dec", Op::Mem8{..}, Op::None, Op::None)
-            => (Enc::M, 0, 1, &[0xfe]),
-        ("mov", Op::Mem8{..}, Op::Reg8(_), Op::None)
-            => (Enc::MR, 0, 0, &[0x88]),
-        ("test", Op::Reg32(_), Op::Reg32(_), Op::None)
-            => (Enc::MR, 0, 0, &[0x85]),
-        ("cmp", Op::Reg32(_), Op::Reg32(_), Op::None)
-            => (Enc::MR, 0, 0, &[0x39]),
-        ("cmp", Op::Reg32(_), Op::Mem{..}, Op::None)
-            => (Enc::RM, 0, 0, &[0x3b]),
-        ("cmp", Op::Reg8(_), Op::Mem{..}, Op::None)
-            => (Enc::RM, 0, 0, &[0x3a]),
+    static INSNS: [Insn; 38] = [
+        insn("add",     RM32,  R32,   None, 0,     &[0x01],       0, Enc::MR),
+        insn("add",     RM64,  R64,   None, REX_W, &[0x01],       0, Enc::MR),
+        insn("add",     RM64,  Imm8,  None, REX_W, &[0x83],       0, Enc::MI),
+        insn("add",     RM64,  Imm32, None, REX_W, &[0x81],       0, Enc::MI),
+        insn("call",    Rel32, None,  None, 0,     &[0xe8],       0, Enc::D),
+        insn("cmp",     RM32,  R32,   None, 0,     &[0x39],       0, Enc::MR),
+        insn("cmp",     R8,    RM8,   None, 0,     &[0x3a],       0, Enc::RM),
+        insn("cmp",     RM8,   Imm8,  None, 0,     &[0x80],       7, Enc::MI),
+        insn("cmp",     R32,   Imm8,  None, 0,     &[0x83],       7, Enc::MI),
+        insn("dec",     RM32,  None,  None, 0,     &[0xff],       1, Enc::M),
+        insn("imul",    R32,   RM32,  Imm8, 0,     &[0x6b],       0, Enc::RMI),
+        insn("imul",    R32,   RM32,  Imm32, 0,    &[0x69],       0, Enc::RMI),
+        insn("inc",     RM32,  None,  None, 0,     &[0xff],       0, Enc::M),
+        insn("int3",    None,  None,  None, 0,     &[0xcc],       0, Enc::ZO),
+        insn("jae",     Rel32, None,  None, 0,     &[0x0f, 0x83], 0, Enc::D),
+        insn("je",      Rel32, None,  None, 0,     &[0x0f, 0x84], 0, Enc::D),
+        insn("jmp",     Rel32, None,  None, 0,     &[0xe9],       0, Enc::D),
+        insn("jne",     Rel32, None,  None, 0,     &[0x0f, 0x85], 0, Enc::D),
+        insn("jnz",     Rel32, None,  None, 0,     &[0x0f, 0x85], 0, Enc::D),
+        insn("jz",      Rel32, None,  None, 0,     &[0x0f, 0x84], 0, Enc::D),
+        insn("lea",     R64,   M,     None, REX_W, &[0x8d],       0, Enc::RM),
+        insn("mov",     RM8,   R8,    None, 0,     &[0x88],       0, Enc::MR),
+        insn("mov",     RM32,  R32,   None, 0,     &[0x89],       0, Enc::MR),
+        insn("mov",     RM64,  R64,   None, REX_W, &[0x89],       0, Enc::MR),
+        insn("mov",     R8,    RM8,   None, 0,     &[0x8a],       0, Enc::RM),
+        insn("mov",     R32,   RM32,  None, 0,     &[0x8b],       0, Enc::RM),
+        insn("mov",     R32,   Imm32, None, 0,     &[0xb8],       0, Enc::OI),
+        insn("mov",     R64,   M64,   None, REX_W, &[0x8b],       0, Enc::RM),
+        insn("mov",     RM32,  Imm32, None, 0,     &[0xc7],       0, Enc::MI),
+        insn("movzx",   R32,   RM8,   None, 0,     &[0x0f, 0xb6], 0, Enc::RM),
+        insn("movzx",   R32,   RM16,  None, 0,     &[0x0f, 0xb7], 0, Enc::RM),
+        insn("ret",     None,  None,  None, 0,     &[0xc3],       0, Enc::ZO),
+        insn("xor",     RM32,  R32,   None, 0,     &[0x31],       0, Enc::MR),
+        insn("shr",     RM32,  One,   None, 0,     &[0xd1],       5, Enc::M1),
+        insn("sub",     RM64,  Imm32, None, REX_W, &[0x81],       5, Enc::MI),
+        insn("syscall", None,  None,  None, 0,     &[0x0f, 0x05], 0, Enc::ZO),
+        insn("test",    RM32,  R32,   None, 0,     &[0x85],       0, Enc::MR),
+        insn("test",    Eax,   Imm32, None, 0,     &[0xa9],       0, Enc::I2),
+    ];
 
-        ("cmp", Op::Reg8(_) | Op::Mem8{..}, Op::Imm8(_), Op::None)
-            => (Enc::MI, 0, 7, &[0x80]),
-
-        ("and", Op::Reg32(_), Op::Imm32(_) | Op::Imm8(_) | Op::One, Op::None)
-            => (Enc::MI, 0, 4, &[0x81]),
-        ("add", Op::Reg32(_), Op::Imm32(_) | Op::Imm8(_) | Op::One, Op::None)
-            => (Enc::MI, 0, 0, &[0x81]),
-        ("add", Op::Reg64(_), Op::Imm32(_) | Op::Imm8(_) | Op::One, Op::None)
-            => (Enc::MI, REX_W, 0, &[0x81]),
-        ("add", Op::Reg32(_), Op::Reg32(_), Op::None)
-            => (Enc::MR, 0, 0, &[0x01]),
-        ("add", Op::Reg64(_), Op::Reg64(_), Op::None)
-            => (Enc::MR, REX_W, 0, &[0x01]),
-        ("call", Op::Rel32(_), Op::None, Op::None)
-            => (Enc::D, 0, 0, &[0xe8]),
-        ("cmp", Op::Reg32(_), Op::Imm32(_) | Op::Imm8(_) | Op::One, Op::None)
-            => (Enc::MI, 0, 7, &[0x81]),
-        ("dec", Op::Reg32(_), Op::None, Op::None)
-            => (Enc::M, 0, 1, &[0xff]),
-        ("imul",    Op::Reg32(_), Op::Reg32(_), Op::Imm8(_) | Op::One)
-            => (Enc::RMI, 0, 0, &[0x6b]),
-        ("imul",    Op::Reg32(_), Op::Reg32(_), Op::Imm32(_) | Op::Imm8(_) | Op::One)
-            => (Enc::RMI, 0, 0, &[0x69]),
-        ("inc", Op::Reg32(_), Op::None, Op::None)
-            => (Enc::M, 0, 0, &[0xff]),
-        ("inc", Op::Reg64(_), Op::None, Op::None)
-            => (Enc::M, REX_W, 0, &[0xff]),
-        ("int3", Op::None, Op::None, Op::None)
-            => (Enc::ZO, 0, 0, &[0xcc]),
-        ("jmp", Op::Rel32(_), Op::None, Op::None)
-            => (Enc::D, 0, 0, &[0xe9]),
-        ("jae", Op::Rel32(_), Op::None, Op::None)
-            => (Enc::D, 0, 0, &[0x0f, 0x83]),
-        ("je", Op::Rel32(_), Op::None, Op::None)
-            => (Enc::D, 0, 0, &[0x0f, 0x84]),
-        ("jz", Op::Rel32(_), Op::None, Op::None)
-            => (Enc::D, 0, 0, &[0x0f, 0x84]),
-        ("jne", Op::Rel32(_), Op::None, Op::None)
-            => (Enc::D, 0, 0, &[0x0f, 0x85]),
-        ("jnz", Op::Rel32(_), Op::None, Op::None)
-            => (Enc::D, 0, 0, &[0x0f, 0x85]),
-        ("lea", Op::Reg64(_), Op::Mem { .. }, Op::None)
-            => (Enc::RM, REX_W, 0, &[0x8d]),
-        ("mov", Op::Reg32(_), Op::Mem { .. }, Op::None)
-            => (Enc::RM, 0, 0, &[0x8b]),
-        ("mov", Op::Reg64(_), Op::Mem { .. }, Op::None)
-            => (Enc::RM, REX_W, 0, &[0x8b]),
-        ("mov", Op::Reg8(_) | Op::Mem { .. }, Op::Reg8(_), Op::None)
-            => (Enc::MR, 0, 0, &[0x88]),
-        ("mov", Op::Reg32(_) | Op::Mem(_), Op::Reg32(_), Op::None)
-            => (Enc::MR, 0, 0, &[0x89]),
-        ("mov", Op::Reg64(_), Op::Reg64(_), Op::None)
-            => (Enc::MR, REX_W, 0, &[0x89]),
-        ("mov", Op::Reg8(_), Op::Reg8(_) | Op::Mem { .. }, Op::None)
-            => (Enc::RM, 0, 0, &[0x8a]),
-        ("mov", Op::Reg32(_), Op::Imm32(_) | Op::Imm8(_) | Op::One, Op::None)
-            => (Enc::OI, 0, 0, &[0xb8]),
-        ("mov", Op::Mem32 { .. }, Op::Imm32(_) | Op::Imm8(_) | Op::One, Op::None)
-            => (Enc::MI, 0, 0, &[0xc7]),
-        ("mov", Op::Mem64 { .. }, Op::Imm32(_) | Op::Imm8(_) | Op::One, Op::None)
-            => (Enc::MI, REX_W, 0, &[0xc7]),
-        ("movzx", Op::Reg32(_), Op::Mem8 { .. }, Op::None)
-            => (Enc::RM, 0, 0, &[0x0f, 0xb6]),
-        ("movzx", Op::Reg32(_), Op::Mem16 { .. }, Op::None)
-            => (Enc::RM, 0, 0, &[0x0f, 0xb7]),
-        ("ret", Op::None, Op::None, Op::None)
-            => (Enc::ZO, 0, 0, &[0xc3]),
-        ("shr", Op::Reg32(_), Op::One, Op::None)
-            => (Enc::M1, 0, 5, &[0xd1]),
-        ("sub", Op::Reg64(_), Op::Imm32(_) | Op::Imm8(_) | Op::One, Op::None)
-            => (Enc::MI, REX_W, 5, &[0x81]),
-        ("syscall", Op::None, Op::None, Op::None)
-            => (Enc::ZO, 0, 0, &[0x0f, 0x05]),
-        ("test", Op::Reg32(_), Op::Imm32(_) | Op::Imm8(_) | Op::One, Op::None)
-            => (Enc::MI, 0, 0, &[0xf7]),
-        ("xor", Op::Reg32(_), Op::Reg32(_), Op::None)
-            => (Enc::MR, 0, 0, &[0x31]),
-        _ => {
-            return None;
+    for insn in &INSNS {
+        if insn.mnemonic == mnemonic
+            && operand_compatible(arg1, insn.op1, insn.op2, insn.op3)
+            && operand_compatible(arg2, insn.op2, insn.op1, insn.op3)
+            && operand_compatible(arg3, insn.op3, insn.op1, insn.op2)
+        {
+            return Some(insn);
         }
-    };
+    }
 
-    // TODO: learn how to initialize array from a slice
-    let len = opcodes.len() as u8;
-    let opcodes: [u8; _] = {
-        if opcodes.len() == 1 {
-            [opcodes[0], 0]
-        } else {
-            [opcodes[0], opcodes[1]]
+    return Option::None;
+
+    const fn insn(
+        mnemonic: &'static str,
+        op1: Op,
+        op2: Op,
+        op3: Op,
+        rex: u8,
+        opcodes: &'static [u8],
+        reg: u8,
+        encoding: Enc,
+    ) -> Insn {
+        Insn {
+            mnemonic,
+            op1,
+            op2,
+            op3,
+            rex,
+            opcodes,
+            reg,
+            encoding,
         }
-    };
+    }
 
-    Some(Insn {
-        encoding,
-        rex,
-        reg,
-        opcodes,
-        len,
-    })
+    fn operand_compatible(arg: &Arg, op: Op, other1: Op, other2: Op) -> bool {
+        match op {
+            None => matches!(arg, Arg::None),
+            Eax => matches!(arg, Arg::Eax),
+            R8 => matches!(arg, Arg::Reg8(_)),
+            _R16 => matches!(arg, Arg::_Reg16(_)),
+            R32 => matches!(arg, Arg::Eax | Arg::Reg32(_)),
+            R64 => matches!(arg, Arg::Reg64(_)),
+            RM8 => {
+                if matches!(other1, Op::R8 | Op::None) && matches!(other2, Op::R8 | Op::None) {
+                    matches!(arg, Arg::Reg8(_) | Arg::Mem8(_) | Arg::Mem(_))
+                } else {
+                    matches!(arg, Arg::Reg8(_) | Arg::Mem8(_))
+                }
+            }
+            RM16 => {
+                if matches!(other1, Op::_R16 | Op::None)
+                    && matches!(other2, Op::_R16 | Op::None)
+                {
+                    matches!(arg, Arg::_Reg16(_) | Arg::Mem16(_) | Arg::Mem(_))
+                } else {
+                    matches!(arg, Arg::_Reg16(_) | Arg::Mem16(_))
+                }
+            }
+            RM32 => {
+                if matches!(other1, Op::Eax | Op::R32 | Op::None)
+                    && matches!(other2, Op::Eax | Op::R32 | Op::None)
+                {
+                    matches!(arg, Arg::Eax | Arg::Reg32(_) | Arg::Mem32(_) | Arg::Mem(_))
+                } else {
+                    matches!(arg, Arg::Eax | Arg::Reg32(_) | Arg::Mem32(_))
+                }
+            }
+            RM64 => {
+                if matches!(other1, Op::R64 | Op::None) && matches!(other2, Op::R64 | Op::None)
+                {
+                    matches!(arg, Arg::Reg64(_) | Arg::Mem64(_) | Arg::Mem(_))
+                } else {
+                    matches!(arg, Arg::Reg64(_) | Arg::Mem64(_))
+                }
+            }
+            One => matches!(arg, Arg::One),
+            Imm8 => matches!(arg, Arg::One | Arg::Imm8(_)),
+            Imm32 => matches!(arg, Arg::One | Arg::Imm8(_) | Arg::Imm32(_)),
+            M => matches!(arg, Arg::Mem(_)),
+            M64 => matches!(arg, Arg::Mem(_) | Arg::Mem64(_)),
+            Rel32 => matches!(arg, Arg::Rel32(_)),
+        }
+    }
 }
 
 fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> Result<(), Error> {
@@ -857,7 +721,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<u64>, Error> {
     }
 }
 
-fn match_operand<'a>(cur: &mut Cursor, input: &'a str) -> Result<Option<Op<'a>>, Error> {
+fn match_argument<'a>(cur: &mut Cursor, input: &'a str) -> Result<Option<Arg<'a>>, Error> {
     if let Some((ident, at)) = match_identifier(cur, input) {
         // TODO: collapse m* cases
         if ident == "m8" {
@@ -865,50 +729,50 @@ fn match_operand<'a>(cur: &mut Cursor, input: &'a str) -> Result<Option<Op<'a>>,
             if !match_char('[', cur) {
                 error_at(cur.off, "expected address after operand size")
             } else {
-                Ok(Some(Op::Mem8(expect_address(cur, input)?)))
+                Ok(Some(Arg::Mem8(expect_address(cur, input)?)))
             }
         } else if ident == "m16" {
             skip_whitespace(cur);
             if !match_char('[', cur) {
                 error_at(cur.off, "expected address after operand size")
             } else {
-                Ok(Some(Op::Mem16(expect_address(cur, input)?)))
+                Ok(Some(Arg::Mem16(expect_address(cur, input)?)))
             }
         } else if ident == "m32" {
             skip_whitespace(cur);
             if !match_char('[', cur) {
                 error_at(cur.off, "expected address after operand size")
             } else {
-                Ok(Some(Op::Mem32(expect_address(cur, input)?)))
+                Ok(Some(Arg::Mem32(expect_address(cur, input)?)))
             }
         } else if ident == "m64" {
             skip_whitespace(cur);
             if !match_char('[', cur) {
                 error_at(cur.off, "expected address after operand size")
             } else {
-                Ok(Some(Op::Mem64(expect_address(cur, input)?)))
+                Ok(Some(Arg::Mem64(expect_address(cur, input)?)))
             }
         } else if let Some(reg) = parse_register(ident) {
             Ok(Some(reg))
         } else {
-            Ok(Some(Op::Rel32((ident, at))))
+            Ok(Some(Arg::Rel32((ident, at))))
         }
     } else if let Some(imm) = match_integer(cur)? {
         if imm == 1 {
-            Ok(Some(Op::One))
+            Ok(Some(Arg::One))
         } else if imm <= 0xff {
-            Ok(Some(Op::Imm8(imm)))
+            Ok(Some(Arg::Imm8(imm)))
         } else {
-            Ok(Some(Op::Imm32(imm)))
+            Ok(Some(Arg::Imm32(imm)))
         }
     } else if match_char('[', cur) {
-        Ok(Some(Op::Mem(expect_address(cur, input)?)))
+        Ok(Some(Arg::Mem(expect_address(cur, input)?)))
     } else if match_char('-', cur) {
         if let Some(imm) = match_integer(cur)? {
             if imm <= 0xff {
-                Ok(Some(Op::Imm8(-(imm as i64) as u64)))
+                Ok(Some(Arg::Imm8(-(imm as i64) as u64)))
             } else {
-                Ok(Some(Op::Imm32(-(imm as i64) as u64)))
+                Ok(Some(Arg::Imm32(-(imm as i64) as u64)))
             }
         } else {
             error_at(cur.off, "expected integer literal")
@@ -923,14 +787,14 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
     let mut base = None;
     let mut index = None;
     let mut scale: u32 = 1;
-    let mut disp: u64 = 0;
+    let mut disp: i64 = 0;
 
     loop {
         skip_whitespace(cur);
 
         if let Some((ident, at)) = match_identifier(cur, &input) {
             if let Some(reg) = parse_register(ident) {
-                let reg = if let Op::Reg64(reg) = reg {
+                let reg = if let Arg::Reg64(reg) = reg {
                     reg
                 } else {
                     return error_at(at, "expected 64-bit register");
@@ -969,7 +833,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
                 label = Some((ident, at));
             }
         } else if let Some(int) = match_integer(cur)? {
-            disp += int as u64; // TODO: check for overflow
+            disp += int as i64; // TODO: check for overflow
         } else {
             return error_at(cur.off, "expected address component");
         }
@@ -994,15 +858,119 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
     })
 }
 
-fn parse_register(name: &str) -> Option<Op> {
+fn parse_register(name: &str) -> Option<Arg> {
     if let Some((idx, _)) = REGS32.iter().enumerate().find(|(_, &reg)| reg == name) {
-        Some(Op::Reg32(idx as u32))
+        if idx == 0 {
+            Some(Arg::Eax)
+        } else {
+            Some(Arg::Reg32(idx as u32))
+        }
     } else if let Some((idx, _)) = REGS64.iter().enumerate().find(|(_, &reg)| reg == name) {
-        Some(Op::Reg64(idx as u32))
+        Some(Arg::Reg64(idx as u32))
     } else if let Some((idx, _)) = REGS8.iter().enumerate().find(|(_, &reg)| reg == name) {
-        Some(Op::Reg8(idx as u32))
+        Some(Arg::Reg8(idx as u32))
     } else {
         None
+    }
+}
+
+fn emit_insn<'a>(
+    insn: &Insn,
+    arg1: &Arg<'a>,
+    arg2: &Arg<'a>,
+    arg3: &Arg<'a>,
+    out: &mut Vec<u8>,
+    patches: &mut Vec<Patch<'a>>,
+    labels: &HashMap<&str, usize>,
+) -> Result<(), Error> {
+    //let beg = out.len();
+
+    let mut bytes = Vec::<u8>::new();
+
+    let mut rex = insn.rex as u32;
+
+    bytes.extend(insn.opcodes);
+
+    match insn.encoding {
+        Enc::ZO => (),
+        Enc::OI => {
+            let idx = bytes.len() - 1;
+            let mut reg = arg1.reg();
+            if reg >= 8 {
+                reg -= 8;
+                rex |= REX_B as u32;
+            }
+
+            bytes[idx] += reg as u8;
+            emit_imm(arg2.imm(), insn.op2, &mut bytes);
+        }
+        Enc::RM => {
+            emit_modrm(arg1.reg(), arg2, &mut bytes, patches, labels, out.len(), &mut rex)?;
+        }
+        Enc::MR => {
+            emit_modrm(arg2.reg(), arg1, &mut bytes, patches, labels, out.len(), &mut rex)?;
+        }
+        Enc::MI => {
+            emit_modrm(insn.reg as u32, arg1, &mut bytes, patches, labels, out.len(), &mut rex)?;
+            emit_imm(arg2.imm(), insn.op2, &mut bytes);
+        }
+        Enc::M1 => emit_modrm(insn.reg as u32, arg1, &mut bytes, patches, labels, out.len(), &mut rex)?,
+        Enc::D => {
+            let Arg::Rel32((label, at)) = *arg1 else {
+                panic!()
+            };
+
+            if let Some(&off) = labels.get(label) {
+                let pos = out.len() + bytes.len() + 4;
+                if let Some(rel) = rel32(off, pos) {
+                    emit32s(-rel, &mut bytes);
+                } else {
+                    return error_at(at, "distance to target is too large");
+                }
+            } else {
+                emit32(0, &mut bytes);
+                let pos = out.len() + bytes.len();
+                patches.push(Patch {
+                    off: pos as i64,
+                    label,
+                    at,
+                    disp: 0,
+                });
+            }
+        }
+        Enc::M => emit_modrm(insn.reg as u32, arg1, &mut bytes, patches, labels, out.len(), &mut rex)?,
+        Enc::I2 => emit_imm(arg2.imm(), insn.op2, &mut bytes),
+        Enc::RMI => {
+            emit_modrm(arg1.reg(), arg2, &mut bytes, patches, labels, out.len(), &mut rex)?;
+            emit_imm(arg3.imm(), insn.op3, &mut bytes);
+        }
+    }
+
+    if rex != 0 {
+        out.push(rex as u8);
+    }
+
+    out.extend_from_slice(&bytes);
+
+    //eprintln!("  {:02x?}", &out[beg..]);
+
+    Ok(())
+}
+
+fn rel32(p0: usize, p1: usize) -> Option<i32> {
+    let diff = p1 - p0;
+    if diff <= i32::max_value() as usize {
+        Some(diff as i32)
+    } else {
+        None
+    }
+}
+
+fn emit_imm(imm: u64, op: Op, out: &mut Vec<u8>) {
+    match op {
+        Op::Imm8 => out.push(imm as u8),
+        Op::Imm32 => emit32(imm as u32, out),
+        _ => panic!(),
     }
 }
 
@@ -1027,20 +995,35 @@ fn emit64(val: u64, out: &mut Vec<u8>) {
     out.extend(val);
 }
 
-fn emit_modrm<'a>(reg: u32, rm: Op<'a>, out: &mut Vec<u8>, patches: &mut Vec<Patch<'a>>) {
+fn emit_modrm<'a>(
+    mut reg: u32,
+    rm: &Arg<'a>,
+    out: &mut Vec<u8>,
+    patches: &mut Vec<Patch<'a>>,
+    labels: &HashMap<&str, usize>,
+    mut pos: usize,
+    rex: &mut u32
+) -> Result<(), Error> {
     let modrm;
 
+    if reg >= 8 {
+        reg -= 8;
+        *rex |= REX_R as u32;
+    }
+
     match rm {
-        Op::Mem(addr) | Op::Mem8(addr) | Op::Mem16(addr) | Op::Mem32(addr) | Op::Mem64(addr) => {
+        Arg::Mem(addr) | Arg::Mem8(addr) | Arg::Mem16(addr) | Arg::Mem32(addr) | Arg::Mem64(addr) => {
             let r#mod;
             let rm;
             let mut has_disp = false;
+            let mut has_imm = false;
             let mut sib = None;
 
             if let Some(base) = addr.base {
-                if addr.disp > 0 || addr.label.is_some() {
+                if addr.disp > 0 {
                     r#mod = 0b10;
-                    has_disp = true;
+                    has_imm = true;
+                    assert!(addr.label.is_none());
                 } else {
                     r#mod = 0b00;
                 }
@@ -1080,25 +1063,55 @@ fn emit_modrm<'a>(reg: u32, rm: Op<'a>, out: &mut Vec<u8>, patches: &mut Vec<Pat
                 out.push(sib as u8);
             }
 
+            if has_imm {
+                if addr.disp <= i32::max_value() as i64 {
+                    emit32(addr.disp as u32, out);
+                } else {
+                    // TODO: error
+                }
+            }
+
             if has_disp {
-                emit32(addr.disp as u32, out);
+                if *rex != 0 {
+                    pos += 1;
+                }
 
                 if let Some((label, at)) = addr.label {
-                    patches.push(Patch {
-                        off: out.len() as i64,
-                        label,
-                        at,
-                        disp: addr.disp as i32,
-                    });
+                    if let Some(&off) = labels.get(label) {
+                        if let Some(rel) = rel32(off, pos + out.len() + 4) {
+                            emit32s(-rel, out);
+                        } else {
+                            return error_at(at, "distance to target is too large");
+                        }
+                    } else {
+                        emit32(0, out);
+                        let patch = Patch {
+                            off: (pos + out.len()) as i64,
+                            label,
+                            at,
+                            disp: addr.disp,
+                        };
+                        patches.push(patch);
+                    }
                 }
             }
         }
-        Op::Reg8(rm) | Op::Reg32(rm) | Op::Reg64(rm) => {
+        Arg::Eax => {
+            modrm = (0b11 << 6 | reg << 3 | 0) as u8;
+            out.push(modrm);
+        }
+        &Arg::Reg8(mut rm) | &Arg::_Reg16(mut rm) | &Arg::Reg32(mut rm) | &Arg::Reg64(mut rm) => {
+            if rm >= 8 {
+                rm -= 8;
+                *rex |= REX_B as u32;
+            }
             modrm = (0b11 << 6 | reg << 3 | rm) as u8;
             out.push(modrm);
         }
-        Op::None | Op::Imm8(_) | Op::Imm32(_) | Op::One | Op::Rel32(_) => panic!(),
+        _ => panic!(),
     }
+
+    Ok(())
 }
 
 fn generate_sib(base: u32, index: Option<u32>, scale: u32) -> u32 {

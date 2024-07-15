@@ -57,14 +57,14 @@ impl Display for Arg<'_> {
         match self {
             Arg::None => write!(f, "<none>"),
             Arg::Eax => write!(f, "eax"),
-            Arg::Reg8(reg) => write!(f, "r8 ({})", REGS8[*reg as usize]),
+            Arg::Reg8(reg) => write!(f, "{}", REGS8[*reg as usize]),
             Arg::_Reg16(_reg) => todo!(),
-            Arg::Reg32(reg) => write!(f, "r32 ({})", REGS32[*reg as usize]),
-            Arg::Reg64(reg) => write!(f, "r64 ({})", REGS64[*reg as usize]),
+            Arg::Reg32(reg) => write!(f, "{}", REGS32[*reg as usize]),
+            Arg::Reg64(reg) => write!(f, "{}", REGS64[*reg as usize]),
             Arg::One => write!(f, "1 (exact)"),
-            Arg::Imm8(imm) => write!(f, "imm8 {imm}"),
-            Arg::Imm32(imm) => write!(f, "imm32 {imm}"),
-            Arg::Rel32((label, _)) => write!(f, "rel: \"{label}\""),
+            Arg::Imm8(imm) => write!(f, "{imm} (imm8)\""),
+            Arg::Imm32(imm) => write!(f, "{imm} (imm32)"),
+            Arg::Rel32((label, _)) => write!(f, "\"{label}\" (rel32)"),
             Arg::Mem(addr)
             | Arg::Mem8(addr)
             | Arg::Mem16(addr)
@@ -83,19 +83,19 @@ impl Display for Arg<'_> {
                 base = if let Some(base) = addr.base {
                     REGS64[base as usize]
                 } else {
-                    "<none>"
+                    "_"
                 },
                 index = if let Some(index) = addr.index {
                     REGS64[index as usize]
                 } else {
-                    "<none>"
+                    "_"
                 },
                 scale = addr.scale,
                 disp = addr.disp,
                 label = if let Some((label, _)) = addr.label {
                     label
                 } else {
-                    "<none>"
+                    "_"
                 }
             ),
         }
@@ -182,9 +182,34 @@ const _REX_X: u8 = 0b0100_0010;
 const REX_B: u8 = 0b0100_0001;
 
 fn main() {
-    let path = std::env::args().skip(1).next().unwrap_or_else(|| {
-        eprintln!("usage: asm INPUT");
-        exit(1);
+    let mut args = std::env::args().skip(1);
+    if args.len() == 0 {
+        print_usage();
+    }
+
+    let mut path = None;
+    let mut verbose = false;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-v" => verbose = true,
+            "-h" => {
+                print_usage();
+            }
+            _ => {
+                if path.is_none() {
+                    path = Some(arg);
+                    continue;
+                }
+
+                eprintln!("error: invalid option '{arg}'");
+                exit(1);
+            }
+        }
+    }
+
+    let path = path.unwrap_or_else(|| {
+        print_usage();
     });
 
     let input = std::fs::read_to_string(&path).unwrap_or_else(|err| {
@@ -212,7 +237,7 @@ fn main() {
         0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
 
-    if let Err(err) = assemble(&input, &mut out) {
+    if let Err(err) = assemble(&input, &mut out, verbose) {
         let mut beg = 0;
         let mut line = 1;
         let mut column = 0;
@@ -293,7 +318,16 @@ fn main() {
         });
 }
 
-pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
+fn print_usage() -> ! {
+    eprintln!(
+        r"usage: asm [OPTIONS] INPUT
+  -h display this message
+  -v verbose output"
+    );
+    exit(1);
+}
+
+pub fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> {
     let mut cur = Cursor {
         char: '\0',
         off: 0,
@@ -352,17 +386,25 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
                     }
                 }
 
-                //eprintln!("{mnemonic} {op1}, {op2} {op3}");
+                if verbose {
+                    eprintln!("{mnemonic} {arg1}, {arg2}, {arg3}");
+                }
 
                 if let Some(insn) = choose_insn(mnemonic, &arg1, &arg2, &arg3) {
-                    //eprintln!(
-                    //    "  {op1:?} {op2:?} {op3:?} | {enc:?}",
-                    //    op1 = insn.op1,
-                    //    op2 = insn.op2,
-                    //    op3 = insn.op3,
-                    //    enc = insn.encoding,
-                    //);
+                    let beg = out.len();
+                    if verbose {
+                        eprintln!(
+                            "  {op1:?} {op2:?} {op3:?} | {enc:?}",
+                            op1 = insn.op1,
+                            op2 = insn.op2,
+                            op3 = insn.op3,
+                            enc = insn.encoding,
+                        );
+                    }
                     emit_insn(insn, &arg1, &arg2, &arg3, out, &mut patches, &labels)?;
+                    if verbose {
+                        eprintln!("  {:02x?}", &out[beg..]);
+                    }
                 } else {
                     return error_at(at, "unknown instruction");
                 }
@@ -397,7 +439,8 @@ pub fn assemble(input: &str, out: &mut Vec<u8>) -> Result<(), Error> {
             // TODO: this assumes that the displacement is always 32-bits, for enabling disp8
             // the offset will need to be stored with the patch
             unsafe {
-                (out.as_mut_ptr().add(patch.off as usize - 4) as *mut i32).write_unaligned(disp as i32);
+                (out.as_mut_ptr().add(patch.off as usize - 4) as *mut i32)
+                    .write_unaligned(disp as i32);
             };
         } else {
             return error_at(patch.at, "missing label");
@@ -504,9 +547,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
                 }
             }
             RM16 => {
-                if matches!(other1, Op::_R16 | Op::None)
-                    && matches!(other2, Op::_R16 | Op::None)
-                {
+                if matches!(other1, Op::_R16 | Op::None) && matches!(other2, Op::_R16 | Op::None) {
                     matches!(arg, Arg::_Reg16(_) | Arg::Mem16(_) | Arg::Mem(_))
                 } else {
                     matches!(arg, Arg::_Reg16(_) | Arg::Mem16(_))
@@ -522,8 +563,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
                 }
             }
             RM64 => {
-                if matches!(other1, Op::R64 | Op::None) && matches!(other2, Op::R64 | Op::None)
-                {
+                if matches!(other1, Op::R64 | Op::None) && matches!(other2, Op::R64 | Op::None) {
                     matches!(arg, Arg::Reg64(_) | Arg::Mem64(_) | Arg::Mem(_))
                 } else {
                     matches!(arg, Arg::Reg64(_) | Arg::Mem64(_))
@@ -883,10 +923,7 @@ fn emit_insn<'a>(
     patches: &mut Vec<Patch<'a>>,
     labels: &HashMap<&str, usize>,
 ) -> Result<(), Error> {
-    //let beg = out.len();
-
     let mut bytes = Vec::<u8>::new();
-
     let mut rex = insn.rex as u32;
 
     bytes.extend(insn.opcodes);
@@ -905,16 +942,48 @@ fn emit_insn<'a>(
             emit_imm(arg2.imm(), insn.op2, &mut bytes);
         }
         Enc::RM => {
-            emit_modrm(arg1.reg(), arg2, &mut bytes, patches, labels, out.len(), &mut rex)?;
+            emit_modrm(
+                arg1.reg(),
+                arg2,
+                &mut bytes,
+                patches,
+                labels,
+                out.len(),
+                &mut rex,
+            )?;
         }
         Enc::MR => {
-            emit_modrm(arg2.reg(), arg1, &mut bytes, patches, labels, out.len(), &mut rex)?;
+            emit_modrm(
+                arg2.reg(),
+                arg1,
+                &mut bytes,
+                patches,
+                labels,
+                out.len(),
+                &mut rex,
+            )?;
         }
         Enc::MI => {
-            emit_modrm(insn.reg as u32, arg1, &mut bytes, patches, labels, out.len(), &mut rex)?;
+            emit_modrm(
+                insn.reg as u32,
+                arg1,
+                &mut bytes,
+                patches,
+                labels,
+                out.len(),
+                &mut rex,
+            )?;
             emit_imm(arg2.imm(), insn.op2, &mut bytes);
         }
-        Enc::M1 => emit_modrm(insn.reg as u32, arg1, &mut bytes, patches, labels, out.len(), &mut rex)?,
+        Enc::M1 => emit_modrm(
+            insn.reg as u32,
+            arg1,
+            &mut bytes,
+            patches,
+            labels,
+            out.len(),
+            &mut rex,
+        )?,
         Enc::D => {
             let Arg::Rel32((label, at)) = *arg1 else {
                 panic!()
@@ -938,10 +1007,26 @@ fn emit_insn<'a>(
                 });
             }
         }
-        Enc::M => emit_modrm(insn.reg as u32, arg1, &mut bytes, patches, labels, out.len(), &mut rex)?,
+        Enc::M => emit_modrm(
+            insn.reg as u32,
+            arg1,
+            &mut bytes,
+            patches,
+            labels,
+            out.len(),
+            &mut rex,
+        )?,
         Enc::I2 => emit_imm(arg2.imm(), insn.op2, &mut bytes),
         Enc::RMI => {
-            emit_modrm(arg1.reg(), arg2, &mut bytes, patches, labels, out.len(), &mut rex)?;
+            emit_modrm(
+                arg1.reg(),
+                arg2,
+                &mut bytes,
+                patches,
+                labels,
+                out.len(),
+                &mut rex,
+            )?;
             emit_imm(arg3.imm(), insn.op3, &mut bytes);
         }
     }
@@ -951,8 +1036,6 @@ fn emit_insn<'a>(
     }
 
     out.extend_from_slice(&bytes);
-
-    //eprintln!("  {:02x?}", &out[beg..]);
 
     Ok(())
 }
@@ -1002,7 +1085,7 @@ fn emit_modrm<'a>(
     patches: &mut Vec<Patch<'a>>,
     labels: &HashMap<&str, usize>,
     mut pos: usize,
-    rex: &mut u32
+    rex: &mut u32,
 ) -> Result<(), Error> {
     let modrm;
 
@@ -1012,7 +1095,11 @@ fn emit_modrm<'a>(
     }
 
     match rm {
-        Arg::Mem(addr) | Arg::Mem8(addr) | Arg::Mem16(addr) | Arg::Mem32(addr) | Arg::Mem64(addr) => {
+        Arg::Mem(addr)
+        | Arg::Mem8(addr)
+        | Arg::Mem16(addr)
+        | Arg::Mem32(addr)
+        | Arg::Mem64(addr) => {
             let r#mod;
             let rm;
             let mut has_disp = false;

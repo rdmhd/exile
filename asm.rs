@@ -11,6 +11,7 @@ struct Addr<'a> {
     index: Option<u32>,
     scale: u32,
     disp: i64,
+    #[allow(dead_code)] disp_at: usize,
     label: Option<(&'a str, usize)>,
 }
 
@@ -109,9 +110,9 @@ struct Cursor<'a> {
 }
 
 #[derive(Debug)]
-pub struct Error {
+struct Error {
     msg: &'static str,
-    pub at: usize,
+    at: usize,
 }
 
 struct Patch<'a> {
@@ -174,11 +175,14 @@ const REGS32: [&str; 16] = [
     "r13d", "r14d", "r15d",
 ];
 
-const REGS64: [&str; 8] = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"];
+const REGS64: [&str; 16] = [
+    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
+    "r14", "r15",
+];
 
 const REX_W: u8 = 0b0100_1000;
 const REX_R: u8 = 0b0100_0100;
-const _REX_X: u8 = 0b0100_0010;
+const REX_X: u8 = 0b0100_0010;
 const REX_B: u8 = 0b0100_0001;
 
 fn main() {
@@ -238,59 +242,7 @@ fn main() {
     ];
 
     if let Err(err) = assemble(&input, &mut out, verbose) {
-        let mut beg = 0;
-        let mut line = 1;
-        let mut column = 0;
-        let mut iter = input.char_indices();
-
-        loop {
-            if let Some((off, char)) = iter.next() {
-                if off == err.at {
-                    break;
-                }
-                if char == '\n' {
-                    line += 1;
-                    column = 0;
-                    beg = iter.offset();
-                } else {
-                    column += 1;
-                }
-            } else {
-                break;
-            }
-        }
-
-        for char in input[beg..err.at].chars() {
-            if char == ' ' || char == '\t' {
-                beg += 1;
-            } else {
-                break;
-            }
-        }
-
-        let mut spaces = 0;
-        for _ in input[beg..err.at].chars() {
-            spaces += 1;
-        }
-
-        let mut len = input.len();
-        for (off, char) in input[err.at..].char_indices() {
-            if char == '\n' {
-                len = off;
-                break;
-            }
-        }
-
-        let prefix = format!("{path}:{line}:{column}: ", column = column + 1);
-        let end = (err.at + len).min(input.len());
-
-        eprintln!("{prefix}{line}", line = &input[beg..end]);
-        eprintln!(
-            "{:<off$}^ {msg}",
-            "",
-            off = spaces + prefix.len(),
-            msg = err.msg
-        );
+        eprintln!("{}", fmt_error(err, &input, &path));
         exit(1);
     }
 
@@ -327,7 +279,71 @@ fn print_usage() -> ! {
     exit(1);
 }
 
-pub fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> {
+fn fmt_error(err: Error, input: &str, path: &str) -> String {
+    let mut beg = 0;
+    let mut line = 1;
+    let mut column = 0;
+    let mut iter = input.char_indices();
+
+    loop {
+        if let Some((off, char)) = iter.next() {
+            if off == err.at {
+                break;
+            }
+            if char == '\n' {
+                line += 1;
+                column = 0;
+                beg = iter.offset();
+            } else {
+                column += 1;
+            }
+        } else {
+            break;
+        }
+    }
+
+    for char in input[beg..err.at].chars() {
+        if char == ' ' || char == '\t' {
+            beg += 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut spaces = 0;
+    for _ in input[beg..err.at].chars() {
+        spaces += 1;
+    }
+
+    let mut len = input.len();
+    for (off, char) in input[err.at..].char_indices() {
+        if char == '\n' {
+            len = off;
+            break;
+        }
+    }
+
+    let prefix = format!("{path}:{line}:{column}: ", column = column + 1);
+    let end = (err.at + len).min(input.len());
+
+    format!(
+        "{prefix}{line}\n{spaces:<off$}^ {msg}",
+        line = &input[beg..end],
+        spaces = "",
+        off = spaces + prefix.len(),
+        msg = err.msg
+    )
+
+    //eprintln!("{prefix}{line}", line = &input[beg..end]);
+    //eprintln!(
+    //    "{:<off$}^ {msg}",
+    //    "",
+    //    off = spaces + prefix.len(),
+    //    msg = err.msg
+    //);
+}
+
+fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> {
     let mut cur = Cursor {
         char: '\0',
         off: 0,
@@ -336,8 +352,15 @@ pub fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Err
 
     advance(&mut cur);
 
-    let mut labels = HashMap::<&str, usize>::new();
+    let mut labels = HashMap::<&str, i64>::new();
     let mut patches = Vec::<Patch>::new();
+
+    let mut out = Output {
+        data: out,
+        buf: [0; 16],
+        len: 0,
+        rex: 0,
+    };
 
     loop {
         skip_whitespace(&mut cur);
@@ -345,14 +368,14 @@ pub fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Err
         if match_char('.', &mut cur) {
             if let Some((ident, at)) = match_identifier(&mut cur, &input) {
                 skip_whitespace(&mut cur);
-                asm_directive(ident, at, &mut cur, out)?;
+                asm_directive(ident, at, &mut cur, out.data)?;
             } else {
                 return error_at(cur.off, "expected directive name");
             }
         } else if let Some((ident, at)) = match_identifier(&mut cur, &input) {
             if match_char(':', &mut cur) {
                 skip_whitespace(&mut cur);
-                if labels.insert(ident, out.len()).is_some() {
+                if labels.insert(ident, out.data.len() as i64).is_some() {
                     return error_at(at, "label with this name already exists");
                 }
             } else {
@@ -391,7 +414,7 @@ pub fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Err
                 }
 
                 if let Some(insn) = choose_insn(mnemonic, &arg1, &arg2, &arg3) {
-                    let beg = out.len();
+                    let beg = out.data.len();
                     if verbose {
                         eprintln!(
                             "  {op1:?} {op2:?} {op3:?} | {enc:?}",
@@ -401,9 +424,9 @@ pub fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Err
                             enc = insn.encoding,
                         );
                     }
-                    emit_insn(insn, &arg1, &arg2, &arg3, out, &mut patches, &labels)?;
+                    emit_insn(insn, &arg1, &arg2, &arg3, &mut out, &mut patches, &labels)?;
                     if verbose {
-                        eprintln!("  {:02x?}", &out[beg..]);
+                        eprintln!("  {:02x?}", &out.data[beg..]);
                     }
                 } else {
                     return error_at(at, "unknown instruction");
@@ -439,7 +462,7 @@ pub fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Err
             // TODO: this assumes that the displacement is always 32-bits, for enabling disp8
             // the offset will need to be stored with the patch
             unsafe {
-                (out.as_mut_ptr().add(patch.off as usize - 4) as *mut i32)
+                (out.data.as_mut_ptr().add(patch.off as usize - 4) as *mut i32)
                     .write_unaligned(disp as i32);
             };
         } else {
@@ -597,11 +620,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
                             advance(cur);
                         }
                     }
-                } else if let Some(int) = match_integer(cur)? {
+                } else if let Some((int, _)) = match_integer(cur)? {
                     // TODO: check that int fits into a byte
                     out.push(int as u8);
                     skip_whitespace(cur);
-                    while let Some(int) = match_integer(cur)? {
+                    while let Some((int, _)) = match_integer(cur)? {
                         out.push(int as u8);
                         skip_whitespace(cur);
                     }
@@ -617,11 +640,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "i16" => {
-            if let Some(int) = match_integer(cur)? {
+            if let Some((int, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 emit16(int as u16, out);
                 skip_whitespace(cur);
-                while let Some(int) = match_integer(cur)? {
+                while let Some((int, _)) = match_integer(cur)? {
                     emit16(int as u16, out);
                     skip_whitespace(cur);
                 }
@@ -630,11 +653,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "i32" => {
-            if let Some(int) = match_integer(cur)? {
+            if let Some((int, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 emit32s(int as i32, out);
                 skip_whitespace(cur);
-                while let Some(int) = match_integer(cur)? {
+                while let Some((int, _)) = match_integer(cur)? {
                     emit32s(int as i32, out);
                     skip_whitespace(cur);
                 }
@@ -643,11 +666,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "i64" => {
-            if let Some(int) = match_integer(cur)? {
+            if let Some((int, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 emit64(int as u64, out);
                 skip_whitespace(cur);
-                while let Some(int) = match_integer(cur)? {
+                while let Some((int, _)) = match_integer(cur)? {
                     emit64(int as u64, out);
                     skip_whitespace(cur);
                 }
@@ -656,7 +679,7 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "res" => {
-            if let Some(int) = match_integer(cur)? {
+            if let Some((int, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 let len = out.len() + int as usize;
                 out.resize(len, 0);
@@ -712,7 +735,8 @@ fn match_identifier<'a>(cur: &mut Cursor, input: &'a str) -> Option<(&'a str, us
     }
 }
 
-fn match_integer(cur: &mut Cursor) -> Result<Option<u64>, Error> {
+fn match_integer(cur: &mut Cursor) -> Result<Option<(u64, usize)>, Error> {
+    let at = cur.off;
     if cur.char == '0' {
         advance(cur);
 
@@ -736,7 +760,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<u64>, Error> {
                     int = int * 16 + n;
                     advance(cur);
                 }
-                Ok(Some(int))
+                Ok(Some((int, at)))
             } else {
                 error_at(cur.off, "expected hexadecimal digit")
             }
@@ -746,7 +770,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<u64>, Error> {
                 int = int * 10 + (cur.char as u64 - '0' as u64);
                 advance(cur);
             }
-            Ok(Some(int))
+            Ok(Some((int, at)))
         }
     } else if cur.char >= '1' && cur.char <= '9' {
         let mut int = cur.char as u64 - '0' as u64;
@@ -755,7 +779,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<u64>, Error> {
             int = int * 10 + (cur.char as u64 - '0' as u64);
             advance(cur);
         }
-        Ok(Some(int))
+        Ok(Some((int, at)))
     } else {
         Ok(None)
     }
@@ -797,7 +821,7 @@ fn match_argument<'a>(cur: &mut Cursor, input: &'a str) -> Result<Option<Arg<'a>
         } else {
             Ok(Some(Arg::Rel32((ident, at))))
         }
-    } else if let Some(imm) = match_integer(cur)? {
+    } else if let Some((imm, _)) = match_integer(cur)? {
         if imm == 1 {
             Ok(Some(Arg::One))
         } else if imm <= 0xff {
@@ -808,7 +832,7 @@ fn match_argument<'a>(cur: &mut Cursor, input: &'a str) -> Result<Option<Arg<'a>
     } else if match_char('[', cur) {
         Ok(Some(Arg::Mem(expect_address(cur, input)?)))
     } else if match_char('-', cur) {
-        if let Some(imm) = match_integer(cur)? {
+        if let Some((imm, _)) = match_integer(cur)? {
             if imm <= 0xff {
                 Ok(Some(Arg::Imm8(-(imm as i64) as u64)))
             } else {
@@ -828,6 +852,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
     let mut index = None;
     let mut scale: u32 = 1;
     let mut disp: i64 = 0;
+    let mut disp_at: usize = 0;
 
     loop {
         skip_whitespace(cur);
@@ -844,7 +869,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
 
                 if match_char('*', cur) {
                     skip_whitespace(cur);
-                    if let Some(int) = match_integer(cur)? {
+                    if let Some((int, _)) = match_integer(cur)? {
                         if int != 1 && int != 2 && int != 4 && int != 8 {
                             return error_at(cur.off, "scale must be 1, 2, 4, or 8");
                         }
@@ -872,7 +897,10 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
             } else {
                 label = Some((ident, at));
             }
-        } else if let Some(int) = match_integer(cur)? {
+        } else if let Some((int, at)) = match_integer(cur)? {
+            if disp_at == 0 {
+                disp_at = at;
+            }
             disp += int as i64; // TODO: check for overflow
         } else {
             return error_at(cur.off, "expected address component");
@@ -894,6 +922,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
         index,
         scale,
         disp,
+        disp_at,
         label,
     })
 }
@@ -914,156 +943,133 @@ fn parse_register(name: &str) -> Option<Arg> {
     }
 }
 
+struct Output<'a> {
+    data: &'a mut Vec<u8>,
+
+    buf: [u8; 16],
+    len: usize,
+    rex: u32,
+}
+
+impl Output<'_> {
+    fn pos(&self) -> i64 {
+        (self.data.len() + self.len + if self.rex != 0 { 1 } else { 0 }) as i64
+    }
+}
+
 fn emit_insn<'a>(
     insn: &Insn,
     arg1: &Arg<'a>,
     arg2: &Arg<'a>,
     arg3: &Arg<'a>,
-    out: &mut Vec<u8>,
+    out: &mut Output,
     patches: &mut Vec<Patch<'a>>,
-    labels: &HashMap<&str, usize>,
+    labels: &HashMap<&str, i64>,
 ) -> Result<(), Error> {
-    let mut bytes = Vec::<u8>::new();
-    let mut rex = insn.rex as u32;
+    out.len = insn.opcodes.len();
+    out.rex = insn.rex as u32;
 
-    bytes.extend(insn.opcodes);
+    unsafe {
+        out.buf
+            .as_mut_ptr()
+            .copy_from_nonoverlapping(insn.opcodes.as_ptr(), insn.opcodes.len())
+    };
 
     match insn.encoding {
         Enc::ZO => (),
         Enc::OI => {
-            let idx = bytes.len() - 1;
             let mut reg = arg1.reg();
             if reg >= 8 {
                 reg -= 8;
-                rex |= REX_B as u32;
+                out.rex |= REX_B as u32;
             }
 
-            bytes[idx] += reg as u8;
-            emit_imm(arg2.imm(), insn.op2, &mut bytes);
+            out.buf[out.len - 1] += reg as u8;
+            write_imm(arg2.imm(), insn.op2, out);
         }
         Enc::RM => {
-            emit_modrm(
-                arg1.reg(),
-                arg2,
-                &mut bytes,
-                patches,
-                labels,
-                out.len(),
-                &mut rex,
-            )?;
+            emit_modrm(arg1.reg(), arg2, out, patches, labels)?;
         }
         Enc::MR => {
-            emit_modrm(
-                arg2.reg(),
-                arg1,
-                &mut bytes,
-                patches,
-                labels,
-                out.len(),
-                &mut rex,
-            )?;
+            emit_modrm(arg2.reg(), arg1, out, patches, labels)?;
         }
         Enc::MI => {
-            emit_modrm(
-                insn.reg as u32,
-                arg1,
-                &mut bytes,
-                patches,
-                labels,
-                out.len(),
-                &mut rex,
-            )?;
-            emit_imm(arg2.imm(), insn.op2, &mut bytes);
+            emit_modrm(insn.reg as u32, arg1, out, patches, labels)?;
+            write_imm(arg2.imm(), insn.op2, out);
         }
-        Enc::M1 => emit_modrm(
-            insn.reg as u32,
-            arg1,
-            &mut bytes,
-            patches,
-            labels,
-            out.len(),
-            &mut rex,
-        )?,
+        Enc::M1 => emit_modrm(insn.reg as u32, arg1, out, patches, labels)?,
         Enc::D => {
             let Arg::Rel32((label, at)) = *arg1 else {
                 panic!()
             };
-
-            if let Some(&off) = labels.get(label) {
-                let pos = out.len() + bytes.len() + 4;
-                if let Some(rel) = rel32(off, pos) {
-                    emit32s(-rel, &mut bytes);
-                } else {
-                    return error_at(at, "distance to target is too large");
-                }
-            } else {
-                emit32(0, &mut bytes);
-                let pos = out.len() + bytes.len();
-                patches.push(Patch {
-                    off: pos as i64,
-                    label,
-                    at,
-                    disp: 0,
-                });
-            }
+            emit_rel32((label, at), 0, labels, patches, out)?;
         }
-        Enc::M => emit_modrm(
-            insn.reg as u32,
-            arg1,
-            &mut bytes,
-            patches,
-            labels,
-            out.len(),
-            &mut rex,
-        )?,
-        Enc::I2 => emit_imm(arg2.imm(), insn.op2, &mut bytes),
+        Enc::M => emit_modrm(insn.reg as u32, arg1, out, patches, labels)?,
+        Enc::I2 => write_imm(arg2.imm(), insn.op2, out),
         Enc::RMI => {
-            emit_modrm(
-                arg1.reg(),
-                arg2,
-                &mut bytes,
-                patches,
-                labels,
-                out.len(),
-                &mut rex,
-            )?;
-            emit_imm(arg3.imm(), insn.op3, &mut bytes);
+            emit_modrm(arg1.reg(), arg2, out, patches, labels)?;
+            write_imm(arg3.imm(), insn.op3, out);
         }
     }
 
-    if rex != 0 {
-        out.push(rex as u8);
+    if out.rex != 0 {
+        out.data.push(out.rex as u8);
     }
 
-    out.extend_from_slice(&bytes);
+    out.data.extend_from_slice(&out.buf[..out.len]);
 
     Ok(())
 }
 
-fn rel32(p0: usize, p1: usize) -> Option<i32> {
-    let diff = p1 - p0;
-    if diff <= i32::max_value() as usize {
-        Some(diff as i32)
+fn emit_rel32<'a>(
+    (label, at): (&'a str, usize),
+    disp: i64,
+    labels: &HashMap<&str, i64>,
+    patches: &mut Vec<Patch<'a>>,
+    out: &mut Output,
+) -> Result<(), Error> {
+    if let Some(&off) = labels.get(label) {
+        let rel = out.pos() + 4 - off;
+        if rel <= i32::max_value() as i64 {
+            write32((-rel) as u32, out);
+        } else {
+            return error_at(at, "distance to target is too large");
+        }
     } else {
-        None
+        out.len += 4; // make space for the immediate value
+        patches.push(Patch {
+            off: out.pos(),
+            label,
+            at,
+            disp,
+        });
     }
+
+    Ok(())
 }
 
-fn emit_imm(imm: u64, op: Op, out: &mut Vec<u8>) {
+fn write8(val: u8, out: &mut Output) {
+    assert!(out.len + 1 <= out.buf.len());
+    unsafe { out.buf.as_mut_ptr().add(out.len).write(val) };
+    out.len += 1;
+}
+
+fn write32(val: u32, out: &mut Output) {
+    assert!(out.len + 4 <= out.buf.len());
+    unsafe { (out.buf.as_mut_ptr().add(out.len) as *mut u32).write(val) };
+    out.len += 4;
+}
+
+fn write_imm(imm: u64, op: Op, out: &mut Output) {
     match op {
-        Op::Imm8 => out.push(imm as u8),
-        Op::Imm32 => emit32(imm as u32, out),
+        Op::Imm8 => write8(imm as u8, out),
+        Op::Imm32 => write32(imm as u32, out),
         _ => panic!(),
     }
 }
 
 fn emit16(val: u16, out: &mut Vec<u8>) {
     let val: [u8; 2] = unsafe { transmute(val) };
-    out.extend(val);
-}
-
-fn emit32(val: u32, out: &mut Vec<u8>) {
-    let val: [u8; 4] = unsafe { transmute(val) };
     out.extend(val);
 }
 
@@ -1081,17 +1087,13 @@ fn emit64(val: u64, out: &mut Vec<u8>) {
 fn emit_modrm<'a>(
     mut reg: u32,
     rm: &Arg<'a>,
-    out: &mut Vec<u8>,
+    out: &mut Output,
     patches: &mut Vec<Patch<'a>>,
-    labels: &HashMap<&str, usize>,
-    mut pos: usize,
-    rex: &mut u32,
+    labels: &HashMap<&str, i64>,
 ) -> Result<(), Error> {
-    let modrm;
-
     if reg >= 8 {
         reg -= 8;
-        *rex |= REX_R as u32;
+        out.rex |= REX_R as u32;
     }
 
     match rm {
@@ -1100,117 +1102,307 @@ fn emit_modrm<'a>(
         | Arg::Mem16(addr)
         | Arg::Mem32(addr)
         | Arg::Mem64(addr) => {
-            let r#mod;
-            let rm;
-            let mut has_disp = false;
-            let mut has_imm = false;
-            let mut sib = None;
+            if let Some((label, at)) = addr.label {
+                // TODO: this should be caught by the parser
+                assert!(addr.base.is_none());
+                assert!(addr.index.is_none());
 
-            if let Some(base) = addr.base {
-                if addr.disp > 0 {
-                    r#mod = 0b10;
-                    has_imm = true;
-                    assert!(addr.label.is_none());
-                } else {
-                    r#mod = 0b00;
-                }
-
-                if base == 4 {
-                    rm = 0b100;
-                    sib = Some(generate_sib(base, addr.index, addr.scale));
-                } else {
-                    if addr.index.is_some() {
-                        rm = 0b100;
-                        sib = Some(generate_sib(base, addr.index, addr.scale));
-                    } else {
-                        rm = base;
-                    }
-                }
+                write_modrm(0b00, reg, 0b101, out);
+                emit_rel32((label, at), addr.disp, labels, patches, out)?;
             } else {
-                if addr.index.is_some() {
-                    r#mod = if addr.disp > 0 || addr.label.is_some() {
-                        0b10
-                    } else {
-                        0b00
-                    };
-                    rm = 0b100;
-                    sib = Some(generate_sib(5, addr.index, addr.scale));
-                } else {
-                    assert!(addr.disp > 0 || addr.label.is_some());
-                    r#mod = 0b00;
-                    rm = 0b101;
-                    has_disp = true;
-                }
-            }
+                let r#mod = match addr.disp {
+                    disp if disp == 0 => 0b00,
+                    disp if disp <= i8::max_value() as i64 => 0b01,
+                    disp if disp <= i32::max_value() as i64 => 0b10,
+                    _ => unreachable!(),
+                };
 
-            let modrm = (r#mod << 6 | reg << 3 | rm) as u8;
+                if let Some(mut base) = addr.base {
+                    assert!(addr.label.is_none()); // TODO: this should be caught by the parser
 
-            out.push(modrm);
-            if let Some(sib) = sib {
-                out.push(sib as u8);
-            }
+                    if base >= 8 {
+                        base -= 8;
+                        out.rex |= REX_B as u32;
+                    }
 
-            if has_imm {
-                if addr.disp <= i32::max_value() as i64 {
-                    emit32(addr.disp as u32, out);
-                } else {
-                    // TODO: error
-                }
-            }
-
-            if has_disp {
-                if *rex != 0 {
-                    pos += 1;
-                }
-
-                if let Some((label, at)) = addr.label {
-                    if let Some(&off) = labels.get(label) {
-                        if let Some(rel) = rel32(off, pos + out.len() + 4) {
-                            emit32s(-rel, out);
+                    if base == 4 {
+                        // base is rsp
+                        write_modrm(r#mod, reg, 0b100, out);
+                        if let Some(mut index) = addr.index {
+                            if index >= 8 {
+                                index -= 8;
+                                out.rex |= REX_X as u32;
+                            }
+                            write_sib(base, index, addr.scale, out);
                         } else {
-                            return error_at(at, "distance to target is too large");
+                            write_sib(base, 0b100, 1, out);
                         }
                     } else {
-                        emit32(0, out);
-                        let patch = Patch {
-                            off: (pos + out.len()) as i64,
-                            label,
-                            at,
-                            disp: addr.disp,
-                        };
-                        patches.push(patch);
+                        if let Some(mut index) = addr.index {
+                            if index >= 8 {
+                                index -= 8;
+                                out.rex |= REX_X as u32;
+                            }
+                            write_modrm(r#mod, reg, 0b100, out);
+                            write_sib(base, index, addr.scale, out);
+                        } else {
+                            write_modrm(r#mod, reg, base, out);
+                        }
                     }
+                } else if let Some(mut index) = addr.index {
+                    if index >= 8 {
+                        index -= 8;
+                        out.rex |= REX_X as u32;
+                    }
+                    write_modrm(r#mod, reg, 0b100, out);
+                    write_sib(0b101, index, addr.scale, out);
+                } else {
+                    // no base or index, just displacement
+                    // TODO: this should be caught by the parser
+                    unreachable!();
                 }
+
+                match addr.disp {
+                    disp if disp == 0 => (),
+                    disp if disp <= i8::max_value() as i64 => write8(addr.disp as u8, out),
+                    disp if disp <= i32::max_value() as i64 => write32(addr.disp as u32, out),
+                    _ => unreachable!(),
+                };
             }
         }
-        Arg::Eax => {
-            modrm = (0b11 << 6 | reg << 3 | 0) as u8;
-            out.push(modrm);
-        }
+        Arg::Eax => write_modrm(0b11, reg, 0, out),
         &Arg::Reg8(mut rm) | &Arg::_Reg16(mut rm) | &Arg::Reg32(mut rm) | &Arg::Reg64(mut rm) => {
             if rm >= 8 {
                 rm -= 8;
-                *rex |= REX_B as u32;
+                out.rex |= REX_B as u32;
             }
-            modrm = (0b11 << 6 | reg << 3 | rm) as u8;
-            out.push(modrm);
+            write_modrm(0b11, reg, rm, out)
         }
-        _ => panic!(),
+        _ => unreachable!(),
     }
 
     Ok(())
 }
 
-fn generate_sib(base: u32, index: Option<u32>, scale: u32) -> u32 {
+fn write_modrm(r#mod: u32, reg: u32, rm: u32, out: &mut Output) {
+    write8((r#mod << 6 | reg << 3 | rm) as u8, out);
+}
+
+fn write_sib(base: u32, index: u32, scale: u32, out: &mut Output) {
     let ss = match scale {
         1 => 0b00,
         2 => 0b01,
         4 => 0b10,
         8 => 0b11,
-        _ => panic!(),
+        _ => unreachable!(),
     };
+    write8((ss << 6 | index << 3 | base) as u8, out);
+}
 
-    let index = index.unwrap_or(0b100);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    return ss << 6 | index << 3 | base;
+    struct Runner {
+        failed: bool,
+    }
+
+    impl Runner {
+        fn new() -> Self {
+            Runner { failed: false }
+        }
+
+        fn fail(&mut self, input: &str, at: usize) {
+            let mut actual = Vec::new();
+
+            match assemble(input, &mut actual, false) {
+                Ok(_) => {
+                    eprintln!("{input}");
+                    eprintln!("  expected failure, but succeded");
+                    eprint!("\n");
+                    self.failed = true;
+                }
+                Err(err) => {
+                    let actual_at = assemble(input, &mut actual, false).unwrap_err().at;
+                    if actual_at != at {
+                        eprintln!("{input}");
+                        eprintln!("expected error at {}, got error at {}", at, actual_at);
+                        eprint!("\n");
+                        self.failed = true;
+                    }
+                }
+            }
+        }
+
+        fn pass(&mut self, input: &str, expected: &[u8]) {
+            let mut actual = Vec::new();
+
+            if let Err(err) = assemble(input, &mut actual, false) {
+                let s = fmt_error(err, input, "_");
+                eprintln!("{}", s.as_str());
+                eprint!("\n");
+                self.failed = true;
+                return;
+            }
+
+            if &actual != expected {
+                let count = expected.len().max(actual.len());
+
+                eprintln!("{input}");
+                eprintln!("  EXP  ACT ??");
+
+                for idx in 0..count {
+                    let exp = expected.get(idx);
+                    let act = actual.get(idx);
+
+                    match (exp, act) {
+                        (Some(exp), Some(act)) => eprintln!(
+                            "  {exp:02x}   {act:02x} {hint}",
+                            hint = if exp != act { "!!!" } else { "" }
+                        ),
+                        (Some(exp), None) => eprintln!("  {exp:02x}   -- !!!"),
+                        (None, Some(act)) => eprintln!("  --   {act:02x} !!!"),
+                        (None, None) => (),
+                    };
+                }
+                eprint!("\n");
+                self.failed = true;
+            }
+        }
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_modrm() {
+        let mut r = Runner::new();
+
+        // no displacement
+        r.pass("mov eax, [rbx]", &[0x8b, 0b00_000_011]);
+
+        // disp8
+        r.pass("mov eax, [rbx+127]", &[0x8b, 0b01_000_011, 127]);
+
+        // disp32
+        r.pass(
+            "mov eax, [rbx+1234]",
+            &[0x8b, 0b10_000_011, 0xd2, 0x04, 0x00, 0x00],
+        );
+        r.pass(
+            "mov eax, [rbx+128]",
+            &[0x8b, 0b10_000_011, 0x80, 0x00, 0x00, 0x00],
+        );
+
+        // base + scaled index
+        r.pass(
+            "mov rax, [rbx+rcx*4]",
+            &[0b0100_1000, 0x8b, 0b00_000_100, 0b10_001_011],
+        );
+        r.pass(
+            "mov rax, [rcx*2+rbx+1234]",
+            &[
+                0b0100_1000,
+                0x8b,
+                0b10_000_100,
+                0b01_001_011,
+                0xd2,
+                0x04,
+                0x00,
+                0x00,
+            ],
+        );
+        r.pass(
+            "mov rax, [r10+rcx*4]",
+            &[0b0100_1001, 0x8b, 0b00_000_100, 0b10_001_010],
+        );
+        r.pass(
+            "mov rax, [r11*2+rbx+1234]",
+            &[
+                0b0100_1010,
+                0x8b,
+                0b10_000_100,
+                0b01_011_011,
+                0xd2,
+                0x04,
+                0x00,
+                0x00,
+            ],
+        );
+
+        // scaled index but no base
+        r.pass(
+            "mov rax, [rdx*2]",
+            &[0b0100_1000, 0x8b, 0b00_000_100, 0b01_010_101],
+        );
+        r.pass(
+            "mov rax, [rdx*4+123]",
+            &[0b0100_1000, 0x8b, 0b01_000_100, 0b10_010_101, 123],
+        );
+
+        // two register operands
+        r.pass("mov ecx, edx", &[0x89, 0b11_010_001]);
+        r.pass("mov eax, r13d", &[0b0100_0100, 0x89, 0b11_101_000]);
+        r.pass("mov r9, r10", &[0b0100_1101, 0x89, 0b11_010_001]);
+        r.pass("mov r11, rbx", &[0b0100_1001, 0x89, 0b11_011_011]);
+        r.pass("mov r8, r9", &[0b0100_1101, 0x89, 0b11_001_000]);
+
+        // SIB byte required when base is rsp/r12
+        r.pass("mov eax, [rsp]", &[0x8b, 0b00_000_100, 0b00_100_100]);
+        r.pass(
+            "mov eax, [r12]",
+            &[0b0100_0001, 0x8b, 0b00_000_100, 0b00_100_100],
+        );
+
+        // rbp/r13 as base must be encoded with displacement of 0 (mod=01)
+        r.pass("mov rax, [rbp]", &[0b0100_1000, 0x8b, 0b01_000_101, 0]);
+        r.pass("mov rax, [r13]", &[0b0100_1001, 0x8b, 0b01_000_101, 0]);
+
+        // rsp can't be used as index register
+        r.fail("mov rax, [rbx+rsp*4]", 14);
+        // r12 can be used as index register (distinguished from rsp by expanded index field)
+        r.pass(
+            "mov rax, [rbx+r12*4+123]",
+            &[0b0100_1010, 0x8b, 0b01_000_100, 0b10_100_011, 123],
+        );
+
+        // rbp/r13 as a base with index has to be encoded with explicit displacement
+        r.pass(
+            "mov rax, [rbp+r10*2+123]",
+            &[0b0100_1010, 0x8b, 0b01_000_100, 0b01_010_101, 123],
+        );
+        r.pass(
+            "mov rax, [r13+r10*2+123]",
+            &[0b0100_1011, 0x8b, 0b01_000_100, 0b01_010_101, 123],
+        );
+        r.pass(
+            "mov rax, [rbp+r14*8]",
+            &[0b0100_1010, 0x8b, 0b01_000_100, 0b11_110_101, 0],
+        );
+        r.pass(
+            "mov rax, [r13+r14*8]",
+            &[0b0100_1011, 0x8b, 0b01_000_100, 0b11_110_101, 0],
+        );
+
+        // labels
+        r.pass(
+            "lea rsi, [label]\n\
+            .i64 0xabcdef0011223344\n\
+            label:\n\
+            .i32 0xab",
+            &[0b0100_1000, 0x8d, 0b00_110_101, 0x08, 0x00, 0x00, 0x00,
+              0x44, 0x33, 0x22, 0x11, 0x00, 0xef, 0xcd, 0xab,
+              0xab, 0x00, 0x00, 0x00,
+            ],
+        );
+        r.pass(
+            "lea rsi, [label + 4]\n\
+            .i64 0xabcdef0011223344\n\
+            label:\n\
+            .i16 0xab 0xcd",
+            &[0b0100_1000, 0x8d, 0b00_110_101, 0x0c, 0x00, 0x00, 0x00,
+              0x44, 0x33, 0x22, 0x11, 0x00, 0xef, 0xcd, 0xab,
+              0xab, 0x00, 0xcd, 0x00],
+        );
+
+        assert!(!r.failed);
+    }
 }

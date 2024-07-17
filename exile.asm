@@ -196,6 +196,7 @@ syscall
 
 add rsp, 8276
 
+call draw_tilemap
 call draw_char
 
 main_loop:
@@ -319,9 +320,56 @@ draw_char_3:
 	jnz draw_char_0
 	ret
 
-; @ebx: cell x
-; @ecx: cell y
-clear_cell:
+; @ebx: x coord
+; @ecx: y coord
+draw_tile:
+	; get offset to the screen buffer
+	imul ebx, ebx, 96
+	imul ecx, ecx, 46080
+	lea rdi, [screen]
+	add rdi, rbx
+	add rdi, rcx
+	; move to the center of the tile
+	add rdi, 23088
+	; draw a dot (2x2 pixels)
+	mov eax, 0x666666
+	mov [rdi], eax
+	mov [rdi+4], eax
+	mov [rdi+1920], eax
+	mov [rdi+1920+4], eax
+	ret
+
+draw_tilemap:
+	push r8
+	push r9
+	push r10
+	lea r8, [tilemap]
+	xor r10d, r10d ; y counter
+draw_tilemap__row:
+	xor r9d, r9d ; x counter
+draw_tilemap__column:
+	movzx eax, m8 [r8]
+	inc r8
+	cmp eax, 1
+	jne draw_tilemap__no_tile
+	mov ebx, r9d
+	mov ecx, r10d
+	call draw_tile
+draw_tilemap__no_tile:
+	inc r9d
+	cmp r9d, 20
+	jne draw_tilemap__column
+	inc r10d
+	cmp r10d, 15
+	jne draw_tilemap__row
+	pop r10
+	pop r9
+	pop r8
+	ret
+
+; @ebx: tile x
+; @ecx: tile y
+clear_tile:
 	lea rdi, [screen]
 	imul ebx, ebx, 96
 	imul ecx, ecx, 46080
@@ -343,21 +391,43 @@ clear_cell_column:
 ; @ebx: delta x
 ; @ecx: delta y
 move_char:
-	movzx eax, m8 [char_x]
-	movzx edx, m8 [char_y]
-	add ebx, eax
-	add ecx, edx
-	cmp ebx, 20
-	jae move_char_done
-	cmp ecx, 15
-	jae move_char_done
+	push r8
+	push r9
+	; store original coords for later use
+	movzx r8d, m8 [char_x]
+	movzx r9d, m8 [char_y]
+	; compute new coords
+	add ebx, r8d
+	add ecx, r9d
+	; get offset into the tilemap for the new coords
+	imul eax, ecx, 20
+	add eax, ebx
+	; check if the tile is walkable
+	lea rsi, [tilemap]
+	cmp m8 [rsi+rax], 0
+	je move_char__done
+	; store new character coords
 	mov [char_x], bl
 	mov [char_y], cl
-	mov ebx, eax
-	mov ecx, edx
-	call clear_cell
+	; clear the previously occupied tile
+	mov ebx, r8d
+	mov ecx, r9d
+	call clear_tile
+	; get offset into the tilemap for the old coords
+	imul eax, r9d, 20
+	add eax, r8d
+	; if the tile has a sprite, redraw it
+	lea rsi, [tilemap]
+	cmp m8 [rsi+rax], 1
+	jne move_char__draw_char
+	mov ebx, r8d
+	mov ecx, r9d
+	call draw_tile
+move_char__draw_char:
 	call draw_char
-move_char_done:
+move_char__done:
+	pop r9
+	pop r8
 	ret
 
 xauth:
@@ -461,9 +531,26 @@ char:
 	.i16 0x0000 0xe000 0x1f00 0x0160 0xc012 0x0100 0xc138 0x1833 0x0002
 
 char_x:
-	.i8 4
-char_y:
 	.i8 3
+char_y:
+	.i8 2
+
+tilemap:
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 1 1 0 0 0 0 0 0 0
+	.i8 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0
+	.i8 0 0 1 1 1 1 0 0 0 1 1 1 1 0 0 0 1 0 0 0
+	.i8 0 0 1 1 1 0 0 0 0 1 1 0 0 0 0 1 1 1 0 0
+	.i8 0 0 1 1 1 0 0 0 0 1 0 0 0 1 1 1 1 1 0 0
+	.i8 0 0 0 0 1 0 0 0 0 0 0 0 0 1 0 1 1 1 0 0
+	.i8 0 0 0 0 1 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0
+	.i8 0 0 0 0 1 0 0 1 1 1 1 1 1 1 0 0 0 0 0 0
+	.i8 0 0 0 0 1 1 1 1 0 1 1 1 1 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 
 put_image:
 	.i8 72           ; opcode

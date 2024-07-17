@@ -11,7 +11,8 @@ struct Addr<'a> {
     index: Option<u32>,
     scale: u32,
     disp: i64,
-    #[allow(dead_code)] disp_at: usize,
+    #[allow(dead_code)]
+    disp_at: usize,
     label: Option<(&'a str, usize)>,
 }
 
@@ -878,6 +879,9 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
                             return error_at(at, "index already set");
                         }
 
+                        if reg == 4 {
+                            return error_at(at, "register can't be used as index");
+                        }
                         index = Some(reg);
                         scale = int as u32;
                     } else {
@@ -888,7 +892,14 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
                         if index.is_some() {
                             return error_at(at, "base and index already set");
                         } else {
-                            index = Some(reg);
+                            if reg == 4 {
+                                // swap rsp with the already set base register because rsp can't be
+                                // used as index
+                                index = base;
+                                base = Some(reg);
+                            } else {
+                                index = Some(reg);
+                            }
                         }
                     } else {
                         base = Some(reg);
@@ -1110,64 +1121,73 @@ fn emit_modrm<'a>(
                 write_modrm(0b00, reg, 0b101, out);
                 emit_rel32((label, at), addr.disp, labels, patches, out)?;
             } else {
-                let r#mod = match addr.disp {
-                    disp if disp == 0 => 0b00,
-                    disp if disp <= i8::max_value() as i64 => 0b01,
-                    disp if disp <= i32::max_value() as i64 => 0b10,
-                    _ => unreachable!(),
+                assert!(addr.label.is_none()); // TODO: this should be caught by the parser
+
+                let index = match addr.index {
+                    Some(mut index) => {
+                        if index >= 8 {
+                            index -= 8;
+                            out.rex |= REX_X as u32;
+                        }
+                        Some(index)
+                    },
+                    None => None,
                 };
 
                 if let Some(mut base) = addr.base {
-                    assert!(addr.label.is_none()); // TODO: this should be caught by the parser
-
                     if base >= 8 {
                         base -= 8;
                         out.rex |= REX_B as u32;
                     }
 
+                    let r#mod = match addr.disp {
+                        disp if disp == 0 => 0b00,
+                        disp if disp <= i8::max_value() as i64 => 0b01,
+                        disp if disp <= i32::max_value() as i64 => 0b10,
+                        _ => unreachable!(),
+                    };
+
                     if base == 4 {
-                        // base is rsp
                         write_modrm(r#mod, reg, 0b100, out);
-                        if let Some(mut index) = addr.index {
-                            if index >= 8 {
-                                index -= 8;
-                                out.rex |= REX_X as u32;
-                            }
+                        if let Some(index) = index {
                             write_sib(base, index, addr.scale, out);
                         } else {
                             write_sib(base, 0b100, 1, out);
                         }
+                    } else if base == 5 && addr.disp == 0 {
+                        if let Some(index) = index {
+                            write_modrm(0b01, reg, 0b100, out);
+                            write_sib(base, index, addr.scale, out);
+                        } else {
+                            write_modrm(0b01, reg, base, out);
+                        }
+                        write8(0, out);
                     } else {
-                        if let Some(mut index) = addr.index {
-                            if index >= 8 {
-                                index -= 8;
-                                out.rex |= REX_X as u32;
-                            }
+                        if let Some(index) = index {
                             write_modrm(r#mod, reg, 0b100, out);
                             write_sib(base, index, addr.scale, out);
                         } else {
                             write_modrm(r#mod, reg, base, out);
                         }
                     }
-                } else if let Some(mut index) = addr.index {
-                    if index >= 8 {
-                        index -= 8;
-                        out.rex |= REX_X as u32;
-                    }
-                    write_modrm(r#mod, reg, 0b100, out);
+
+                    match addr.disp {
+                        disp if disp == 0 => (),
+                        disp if disp <= i8::max_value() as i64 => write8(addr.disp as u8, out),
+                        disp if disp <= i32::max_value() as i64 => write32(addr.disp as u32, out),
+                        _ => unreachable!(),
+                    };
+                } else if let Some(index) = index {
+                    write_modrm(0b00, reg, 0b100, out);
                     write_sib(0b101, index, addr.scale, out);
+                    if addr.base.is_none() {
+                        write32(addr.disp as u32, out);
+                    }
                 } else {
                     // no base or index, just displacement
                     // TODO: this should be caught by the parser
                     unreachable!();
                 }
-
-                match addr.disp {
-                    disp if disp == 0 => (),
-                    disp if disp <= i8::max_value() as i64 => write8(addr.disp as u8, out),
-                    disp if disp <= i32::max_value() as i64 => write32(addr.disp as u32, out),
-                    _ => unreachable!(),
-                };
             }
         }
         Arg::Eax => write_modrm(0b11, reg, 0, out),
@@ -1223,10 +1243,9 @@ mod tests {
                     self.failed = true;
                 }
                 Err(err) => {
-                    let actual_at = assemble(input, &mut actual, false).unwrap_err().at;
-                    if actual_at != at {
+                    if err.at != at {
                         eprintln!("{input}");
-                        eprintln!("expected error at {}, got error at {}", at, actual_at);
+                        eprintln!("expected error at {}, got error at {}", at, err.at);
                         eprint!("\n");
                         self.failed = true;
                     }
@@ -1331,11 +1350,11 @@ mod tests {
         // scaled index but no base
         r.pass(
             "mov rax, [rdx*2]",
-            &[0b0100_1000, 0x8b, 0b00_000_100, 0b01_010_101],
+            &[0b0100_1000, 0x8b, 0b00_000_100, 0b01_010_101, 0x00, 0x00, 0x00, 0x00],
         );
         r.pass(
             "mov rax, [rdx*4+123]",
-            &[0b0100_1000, 0x8b, 0b01_000_100, 0b10_010_101, 123],
+            &[0b0100_1000, 0x8b, 0b00_000_100, 0b10_010_101, 123, 0x00, 0x00, 0x00],
         );
 
         // two register operands
@@ -1355,9 +1374,12 @@ mod tests {
         // rbp/r13 as base must be encoded with displacement of 0 (mod=01)
         r.pass("mov rax, [rbp]", &[0b0100_1000, 0x8b, 0b01_000_101, 0]);
         r.pass("mov rax, [r13]", &[0b0100_1001, 0x8b, 0b01_000_101, 0]);
+        r.pass("mov rax, [rbp+1234]", &[0b0100_1000, 0x8b, 0b10_000_101, 0xd2, 0x04, 0x00, 0x00]);
 
         // rsp can't be used as index register
         r.fail("mov rax, [rbx+rsp*4]", 14);
+        // in case where base and index are ambiguous, treat rsp as base
+        r.pass("mov rax, [rbx+rsp]", &[0b0100_1000, 0x8b, 0b00_000_100, 0b00_011_100]);
         // r12 can be used as index register (distinguished from rsp by expanded index field)
         r.pass(
             "mov rax, [rbx+r12*4+123]",

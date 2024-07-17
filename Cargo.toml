@@ -1,0 +1,7 @@
+bin = [
+  { name = "asm", path = "asm.rs" },
+]
+
+[package]
+name = "asm"
+edition = "2021"

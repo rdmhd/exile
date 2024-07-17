@@ -24,8 +24,8 @@ enum Arg<'a> {
     Reg32(u32),
     Reg64(u32),
     One, // immediate 1
-    Imm8(u64),
-    Imm32(u64),
+    Imm8(i64),
+    Imm32(i64),
     Mem(Addr<'a>),
     Mem8(Addr<'a>),
     Mem16(Addr<'a>),
@@ -35,7 +35,7 @@ enum Arg<'a> {
 }
 
 impl Arg<'_> {
-    fn imm(&self) -> u64 {
+    fn imm(&self) -> i64 {
         match self {
             Arg::Imm8(imm) => *imm,
             Arg::Imm32(imm) => *imm,
@@ -480,16 +480,19 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 38] = [
+    static INSNS: [Insn; 41] = [
         insn("add",     RM32,  R32,   None, 0,     &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,   None, REX_W, &[0x01],       0, Enc::MR),
+        insn("add",     RM32,  Imm8,  None, 0,     &[0x83],       0, Enc::MI),
         insn("add",     RM64,  Imm8,  None, REX_W, &[0x83],       0, Enc::MI),
+        insn("add",     RM32,  Imm32, None, 0,     &[0x81],       0, Enc::MI),
         insn("add",     RM64,  Imm32, None, REX_W, &[0x81],       0, Enc::MI),
         insn("call",    Rel32, None,  None, 0,     &[0xe8],       0, Enc::D),
         insn("cmp",     RM32,  R32,   None, 0,     &[0x39],       0, Enc::MR),
         insn("cmp",     R8,    RM8,   None, 0,     &[0x3a],       0, Enc::RM),
         insn("cmp",     RM8,   Imm8,  None, 0,     &[0x80],       7, Enc::MI),
         insn("cmp",     R32,   Imm8,  None, 0,     &[0x83],       7, Enc::MI),
+        insn("cmp",     R32,   Imm32, None, 0,     &[0x81],       7, Enc::MI),
         insn("dec",     RM32,  None,  None, 0,     &[0xff],       1, Enc::M),
         insn("imul",    R32,   RM32,  Imm8, 0,     &[0x6b],       0, Enc::RMI),
         insn("imul",    R32,   RM32,  Imm32, 0,    &[0x69],       0, Enc::RMI),
@@ -621,11 +624,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
                             advance(cur);
                         }
                     }
-                } else if let Some((int, _)) = match_integer(cur)? {
+                } else if let Some((int, _, _)) = match_integer(cur)? {
                     // TODO: check that int fits into a byte
                     out.push(int as u8);
                     skip_whitespace(cur);
-                    while let Some((int, _)) = match_integer(cur)? {
+                    while let Some((int, _, _)) = match_integer(cur)? {
                         out.push(int as u8);
                         skip_whitespace(cur);
                     }
@@ -641,11 +644,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "i16" => {
-            if let Some((int, _)) = match_integer(cur)? {
+            if let Some((int, _, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 emit16(int as u16, out);
                 skip_whitespace(cur);
-                while let Some((int, _)) = match_integer(cur)? {
+                while let Some((int, _, _)) = match_integer(cur)? {
                     emit16(int as u16, out);
                     skip_whitespace(cur);
                 }
@@ -654,11 +657,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "i32" => {
-            if let Some((int, _)) = match_integer(cur)? {
+            if let Some((int, _, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 emit32s(int as i32, out);
                 skip_whitespace(cur);
-                while let Some((int, _)) = match_integer(cur)? {
+                while let Some((int, _, _)) = match_integer(cur)? {
                     emit32s(int as i32, out);
                     skip_whitespace(cur);
                 }
@@ -667,11 +670,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "i64" => {
-            if let Some((int, _)) = match_integer(cur)? {
+            if let Some((int, _, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 emit64(int as u64, out);
                 skip_whitespace(cur);
-                while let Some((int, _)) = match_integer(cur)? {
+                while let Some((int, _, _)) = match_integer(cur)? {
                     emit64(int as u64, out);
                     skip_whitespace(cur);
                 }
@@ -680,7 +683,7 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "res" => {
-            if let Some((int, _)) = match_integer(cur)? {
+            if let Some((int, _, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 let len = out.len() + int as usize;
                 out.resize(len, 0);
@@ -699,6 +702,10 @@ fn error_at<T>(at: usize, msg: &'static str) -> Result<T, Error> {
 
 fn advance(cur: &mut Cursor) {
     (cur.off, cur.char) = cur.iter.next().unwrap_or((cur.iter.offset(), '\0'))
+}
+
+fn peek(cur: &mut Cursor) -> char {
+    cur.iter.clone().next().unwrap_or((0, '\0')).1
 }
 
 fn skip_whitespace(cur: &mut Cursor) {
@@ -736,9 +743,26 @@ fn match_identifier<'a>(cur: &mut Cursor, input: &'a str) -> Option<(&'a str, us
     }
 }
 
-fn match_integer(cur: &mut Cursor) -> Result<Option<(u64, usize)>, Error> {
+fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize, bool)>, Error> {
     let at = cur.off;
-    if cur.char == '0' {
+
+    // TODO: handle overflows
+
+    if cur.char == '-' {
+        let next = peek(cur);
+        if next >= '0' && next <= '9' {
+            advance(cur);
+            advance(cur);
+            let mut int = next as u64 - '0' as u64;
+            while cur.char >= '0' && cur.char <= '9' {
+                int = int * 10 + (cur.char as u64 - '0' as u64);
+                advance(cur);
+            }
+            Ok(Some((-(int as i64), at, false)))
+        } else {
+            Ok(None)
+        }
+    } else if cur.char == '0' {
         advance(cur);
 
         if cur.char == 'x' {
@@ -761,7 +785,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<(u64, usize)>, Error> {
                     int = int * 16 + n;
                     advance(cur);
                 }
-                Ok(Some((int, at)))
+                Ok(Some((int as i64, at, true)))
             } else {
                 error_at(cur.off, "expected hexadecimal digit")
             }
@@ -771,7 +795,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<(u64, usize)>, Error> {
                 int = int * 10 + (cur.char as u64 - '0' as u64);
                 advance(cur);
             }
-            Ok(Some((int, at)))
+            Ok(Some((int as i64, at, false)))
         }
     } else if cur.char >= '1' && cur.char <= '9' {
         let mut int = cur.char as u64 - '0' as u64;
@@ -780,7 +804,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<(u64, usize)>, Error> {
             int = int * 10 + (cur.char as u64 - '0' as u64);
             advance(cur);
         }
-        Ok(Some((int, at)))
+        Ok(Some((int as i64, at, false)))
     } else {
         Ok(None)
     }
@@ -822,26 +846,36 @@ fn match_argument<'a>(cur: &mut Cursor, input: &'a str) -> Result<Option<Arg<'a>
         } else {
             Ok(Some(Arg::Rel32((ident, at))))
         }
-    } else if let Some((imm, _)) = match_integer(cur)? {
+    } else if let Some((imm, at, is_hex)) = match_integer(cur)? {
         if imm == 1 {
             Ok(Some(Arg::One))
-        } else if imm <= 0xff {
-            Ok(Some(Arg::Imm8(imm)))
         } else {
-            Ok(Some(Arg::Imm32(imm)))
+            if is_hex {
+                if imm <= u8::max_value() as i64 {
+                    Ok(Some(Arg::Imm8(imm)))
+                } else if imm <= u32::max_value() as i64 {
+                    Ok(Some(Arg::Imm32(imm)))
+                } else {
+                    error_at(
+                        at,
+                        "immediate value is out of range of unsigned 32-bit integer",
+                    )
+                }
+            } else {
+                if imm >= i8::min_value() as i64 && imm <= i8::max_value() as i64 {
+                    Ok(Some(Arg::Imm8(imm)))
+                } else if imm >= i32::min_value() as i64 && imm <= i32::max_value() as i64 {
+                    Ok(Some(Arg::Imm32(imm)))
+                } else {
+                    error_at(
+                        at,
+                        "immediate value is out of range of signed 32-bit integer",
+                    )
+                }
+            }
         }
     } else if match_char('[', cur) {
         Ok(Some(Arg::Mem(expect_address(cur, input)?)))
-    } else if match_char('-', cur) {
-        if let Some((imm, _)) = match_integer(cur)? {
-            if imm <= 0xff {
-                Ok(Some(Arg::Imm8(-(imm as i64) as u64)))
-            } else {
-                Ok(Some(Arg::Imm32(-(imm as i64) as u64)))
-            }
-        } else {
-            error_at(cur.off, "expected integer literal")
-        }
     } else {
         Ok(None)
     }
@@ -870,7 +904,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
 
                 if match_char('*', cur) {
                     skip_whitespace(cur);
-                    if let Some((int, _)) = match_integer(cur)? {
+                    if let Some((int, _, _)) = match_integer(cur)? {
                         if int != 1 && int != 2 && int != 4 && int != 8 {
                             return error_at(cur.off, "scale must be 1, 2, 4, or 8");
                         }
@@ -908,7 +942,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
             } else {
                 label = Some((ident, at));
             }
-        } else if let Some((int, at)) = match_integer(cur)? {
+        } else if let Some((int, at, _)) = match_integer(cur)? {
             if disp_at == 0 {
                 disp_at = at;
             }
@@ -1071,7 +1105,7 @@ fn write32(val: u32, out: &mut Output) {
     out.len += 4;
 }
 
-fn write_imm(imm: u64, op: Op, out: &mut Output) {
+fn write_imm(imm: i64, op: Op, out: &mut Output) {
     match op {
         Op::Imm8 => write8(imm as u8, out),
         Op::Imm32 => write32(imm as u32, out),
@@ -1130,7 +1164,7 @@ fn emit_modrm<'a>(
                             out.rex |= REX_X as u32;
                         }
                         Some(index)
-                    },
+                    }
                     None => None,
                 };
 
@@ -1424,6 +1458,36 @@ mod tests {
               0x44, 0x33, 0x22, 0x11, 0x00, 0xef, 0xcd, 0xab,
               0xab, 0x00, 0xcd, 0x00],
         );
+
+        assert!(!r.failed);
+    }
+
+    #[test]
+    fn test_immediates() {
+        let mut r = Runner::new();
+
+        r.pass("add eax, 127", &[0x83, 0b11_000_000, 127]);
+        r.pass("add eax, -128", &[0x83, 0b11_000_000, 0x80]);
+        r.pass("add eax, 128", &[0x81, 0b11_000_000, 128, 0, 0, 0]);
+        r.pass(
+            "add eax, -129",
+            &[0x81, 0b11_000_000, 0x7f, 0xff, 0xff, 0xff],
+        );
+        r.pass(
+            "add eax, 2147483647",
+            &[0x81, 0b11_000_000, 0xff, 0xff, 0xff, 0x7f],
+        );
+        r.pass(
+            "add eax, -2147483648",
+            &[0x81, 0b11_000_000, 0x00, 0x00, 0x00, 0x80],
+        );
+        r.fail("add eax, 2147483648", 9);
+        r.fail("add eax, -2147483649", 9);
+
+        r.pass("add eax, 0xff", &[0x83, 0b11_000_000, 0xff]);
+        r.pass("add eax, 0x0100", &[0x81, 0b11_000_000, 0x00, 0x01, 0x00, 0x00]);
+        r.pass("add eax, 0xffffffff", &[0x81, 0b11_000_000, 0xff, 0xff, 0xff, 0xff]);
+        r.fail("add eax, 0x100000000", 9);
 
         assert!(!r.failed);
     }

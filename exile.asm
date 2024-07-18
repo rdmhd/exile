@@ -196,41 +196,11 @@ syscall
 
 add rsp, 8276
 
-mov eax, 2
-mov ebx, 1
-mov ecx, 6
-mov edx, 6
-call place_room
+; seed rng
+rdrand eax
+mov [rng_state], eax
 
-mov eax, 9
-mov ebx, 8
-mov ecx, 14
-mov edx, 12
-call place_room
-
-mov eax, 15
-mov ebx, 3
-mov ecx, 18
-mov edx, 7
-call place_room
-
-mov eax, 2
-mov ebx, 1
-mov ecx, 9
-mov edx, 8
-call place_connection
-
-mov eax, 15
-mov ebx, 3
-mov ecx, 9
-mov edx, 8
-call place_connection
-
-mov eax, 9
-mov ebx, 8
-mov ecx, 2
-mov edx, 1
-call place_connection
+call generate_map
 
 call draw_tilemap
 call draw_char
@@ -288,7 +258,13 @@ process_keydown:
 	je process_keydown__move_up
 	cmp eax, 0x2d ; is it 'k' key
 	je process_keydown__move_up
-	jmp main_loop
+	cmp eax, 0x1b ; is it 'r' key
+	jne main_loop
+	call generate_map
+	call clear_screen
+	call draw_tilemap
+	call draw_char
+	jmp refresh_screen
 process_keydown__move_right:
 	mov ebx, 1
 	xor ecx, ecx
@@ -424,6 +400,17 @@ clear_cell_column:
 	jnz clear_cell_row
 	ret
 
+clear_screen:
+	; TODO: rep stosb?
+	lea rax, [screen]
+	xor ebx, ebx
+clear_screen__next:
+	mov m64 [rax+rbx*8], 0
+	inc ebx
+	cmp ebx, 86400
+	jl clear_screen__next
+	ret
+
 ; @ebx: delta x
 ; @ecx: delta y
 move_char:
@@ -466,10 +453,49 @@ move_char__done:
 	pop r8
 	ret
 
-; @eax: x0
-; @ebx: y0
-; @ecx: x1
-; @edx: y1
+generate_map:
+	; clear all tiles
+	lea rsi, [tilemap]
+	xor ecx, ecx
+generate_map__next:
+	mov m32 [rsi+rcx*4], 0
+	inc ecx
+	cmp ecx, 75
+	jl generate_map__next
+	; place anc connect hardcoded rooms
+	mov eax, 2
+	mov ebx, 1
+	mov ecx, 6
+	mov edx, 6
+	call place_room
+	mov eax, 9
+	mov ebx, 8
+	mov ecx, 14
+	mov edx, 12
+	call place_room
+	mov eax, 15
+	mov ebx, 3
+	mov ecx, 18
+	mov edx, 7
+	call place_room
+	mov eax, 2
+	mov ebx, 1
+	mov ecx, 9
+	mov edx, 8
+	call place_connection
+	mov eax, 9
+	mov ebx, 8
+	mov ecx, 15
+	mov edx, 3
+	call place_connection
+	mov eax, 15
+	mov ebx, 3
+	mov ecx, 2
+	mov edx, 1
+	call place_connection
+	ret
+
+; x0: eax, y0: ebx, x1: ecx, y1: edx
 place_room:
 	lea rsi, [tilemap]
 	imul edi, ebx, 20
@@ -487,29 +513,45 @@ place_room__column:
 	jne place_room__row
 	ret
 
-; @eax: x0
-; @ebx: y0
-; @ecx: x1
-; @edx: y1
+; x0: eax, y0: ebx, x1: ecx, y1: edx
 place_connection:
 	push r8
 	push r9
-	mov r8d, ebx ; store y0
-	mov r9d, edx ; store y1
-	xchg ebx, ecx
-	call place_connection_horz ; (x0, y0) -> (x1, y0)
-	mov ecx, eax
+	push r10
+	push r11
+	mov r8d, eax ; store x0
+	mov r9d, ebx ; store y0
+	mov r10d, ecx ; store x1
+	mov r11d, edx ; store y1
+	call xorshift32
+	and eax, 1
+	jz place_connection__vert_first
 	mov eax, r8d
-	mov ebx, r9d
-	call place_connection_vert ; (x1, y0) -> (x1, y1)
+	mov ebx, r10d
+	mov ecx, r9d
+	call place_connection_horz
+	mov eax, r9d
+	mov ebx, r11d
+	mov ecx, r10d
+	call place_connection_vert
+	jmp place_connection__done
+place_connection__vert_first:
+	mov eax, r9d
+	mov ebx, r11d
+	mov ecx, r8d
+	call place_connection_vert
+	mov eax, r8d
+	mov ebx, r10d
+	mov ecx, r11d
+	call place_connection_horz
+place_connection__done:
+	pop r11
+	pop r10
 	pop r9
 	pop r8
 	ret
 
-; @eax: x0
-; @ebx: x1
-; @ecx: y
-; =eax: final x position
+; x0: eax, x1: ebx, y: ecx
 place_connection_horz:
 	; (rsi) compute initial offset into the tilemap
 	lea rsi, [tilemap]
@@ -520,6 +562,7 @@ place_connection_horz:
 	mov edi, -1
 	cmp eax, ebx
 	cmovg edx, edi
+	add ebx, edx
 place_connection_horz__next:
 	mov m8 [rsi+rax], 1
 	add eax, edx
@@ -527,9 +570,7 @@ place_connection_horz__next:
 	jne place_connection_horz__next
 	ret
 
-; @eax: y0
-; @ebx: y1
-; @ecx: x
+; y0: eax, y1: ebx, x: ecx
 place_connection_vert:
 	; compute p1, p2
 	lea rsi, [tilemap]
@@ -547,6 +588,24 @@ place_connection_vert__next:
 	add rax, 20
 	cmp rax, rbx
 	jle place_connection_vert__next
+	ret
+
+; -> rng state: eax
+xorshift32:
+	mov eax, [rng_state]
+	; x ^= x << 13
+	mov ebx, eax
+	shl ebx, 13
+	xor eax, ebx
+	; x ^= x >> 17
+	mov ebx, eax
+	shr ebx, 17
+	xor eax, ebx
+	; x ^= x << 5
+	mov ebx, eax
+	shl ebx, 5
+	xor eax, ebx
+	mov [rng_state], eax
 	ret
 
 xauth:
@@ -653,6 +712,9 @@ char_x:
 	.i8 3
 char_y:
 	.i8 2
+
+rng_state:
+	.i32 0
 
 tilemap:
 	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0

@@ -64,7 +64,7 @@ impl Display for Arg<'_> {
             Arg::Reg32(reg) => write!(f, "{}", REGS32[*reg as usize]),
             Arg::Reg64(reg) => write!(f, "{}", REGS64[*reg as usize]),
             Arg::One => write!(f, "1 (exact)"),
-            Arg::Imm8(imm) => write!(f, "{imm} (imm8)\""),
+            Arg::Imm8(imm) => write!(f, "{imm} (imm8)"),
             Arg::Imm32(imm) => write!(f, "{imm} (imm32)"),
             Arg::Rel32((label, _)) => write!(f, "\"{label}\" (rel32)"),
             Arg::Mem(addr)
@@ -481,13 +481,14 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 60] = [
+    static INSNS: [Insn; 64] = [
         insn("add",     RM32,  R32,   None,  0,     &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,   None,  REX_W, &[0x01],       0, Enc::MR),
         insn("add",     RM32,  Imm8,  None,  0,     &[0x83],       0, Enc::MI),
         insn("add",     RM64,  Imm8,  None,  REX_W, &[0x83],       0, Enc::MI),
         insn("add",     RM32,  Imm32, None,  0,     &[0x81],       0, Enc::MI),
         insn("add",     RM64,  Imm32, None,  REX_W, &[0x81],       0, Enc::MI),
+        insn("and",     RM32,  Imm8,  None,  0    , &[0x83],       4, Enc::MI),
         insn("call",    Rel32, None,  None,  0,     &[0xe8],       0, Enc::D),
         insn("cmovg",   R32,   RM32,  None,  0,     &[0x0f, 0x4f], 0, Enc::RM),
         insn("cmovg",   R64,   RM64,  None,  REX_W, &[0x0f, 0x4f], 0, Enc::RM),
@@ -531,9 +532,12 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("neg",     RM32,  None,  None,  0,     &[0xf7],       3, Enc::M),
         insn("pop",     R64,   None,  None,  0,     &[0x58],       0, Enc::O),
         insn("push",    R64,   None,  None,  0,     &[0x50],       0, Enc::O),
+        insn("rdrand",  R32,   None,  None,  0,     &[0x0f, 0xc7], 6, Enc::M),
         insn("ret",     None,  None,  None,  0,     &[0xc3],       0, Enc::ZO),
         insn("xor",     RM32,  R32,   None,  0,     &[0x31],       0, Enc::MR),
+        insn("shl",     RM32,  Imm8,  None,  0,     &[0xc1],       4, Enc::MI),
         insn("shr",     RM32,  One,   None,  0,     &[0xd1],       5, Enc::M1),
+        insn("shr",     RM32,  Imm8,  None,  0,     &[0xc1],       5, Enc::MI),
         insn("sub",     RM32,  R32,   None,  0,     &[0x29],       0, Enc::MR),
         insn("sub",     RM64,  R64,   None,  REX_W, &[0x29],       0, Enc::MR),
         insn("sub",     RM64,  Imm32, None,  REX_W, &[0x81],       5, Enc::MI),

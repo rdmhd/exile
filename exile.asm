@@ -196,6 +196,42 @@ syscall
 
 add rsp, 8276
 
+mov eax, 2
+mov ebx, 1
+mov ecx, 6
+mov edx, 6
+call place_room
+
+mov eax, 9
+mov ebx, 8
+mov ecx, 14
+mov edx, 12
+call place_room
+
+mov eax, 15
+mov ebx, 3
+mov ecx, 18
+mov edx, 7
+call place_room
+
+mov eax, 2
+mov ebx, 1
+mov ecx, 9
+mov edx, 8
+call place_connection
+
+mov eax, 15
+mov ebx, 3
+mov ecx, 9
+mov edx, 8
+call place_connection
+
+mov eax, 9
+mov ebx, 8
+mov ecx, 2
+mov edx, 1
+call place_connection
+
 call draw_tilemap
 call draw_char
 
@@ -351,11 +387,11 @@ draw_tilemap__column:
 	movzx eax, m8 [r8]
 	inc r8
 	cmp eax, 1
-	jne draw_tilemap__no_tile
+	jne draw_tilemap__next_tile
 	mov ebx, r9d
 	mov ecx, r10d
 	call draw_tile
-draw_tilemap__no_tile:
+draw_tilemap__next_tile:
 	inc r9d
 	cmp r9d, 20
 	jne draw_tilemap__column
@@ -428,6 +464,89 @@ move_char__draw_char:
 move_char__done:
 	pop r9
 	pop r8
+	ret
+
+; @eax: x0
+; @ebx: y0
+; @ecx: x1
+; @edx: y1
+place_room:
+	lea rsi, [tilemap]
+	imul edi, ebx, 20
+	add rsi, rdi
+place_room__row:
+	mov edi, eax
+place_room__column:
+	mov m8 [rsi+rdi], 1
+	inc edi
+	cmp edi, ecx
+	jne place_room__column
+	add rsi, 20
+	inc ebx
+	cmp ebx, edx
+	jne place_room__row
+	ret
+
+; @eax: x0
+; @ebx: y0
+; @ecx: x1
+; @edx: y1
+place_connection:
+	push r8
+	push r9
+	mov r8d, ebx ; store y0
+	mov r9d, edx ; store y1
+	xchg ebx, ecx
+	call place_connection_horz ; (x0, y0) -> (x1, y0)
+	mov ecx, eax
+	mov eax, r8d
+	mov ebx, r9d
+	call place_connection_vert ; (x1, y0) -> (x1, y1)
+	pop r9
+	pop r8
+	ret
+
+; @eax: x0
+; @ebx: x1
+; @ecx: y
+; =eax: final x position
+place_connection_horz:
+	; (rsi) compute initial offset into the tilemap
+	lea rsi, [tilemap]
+	imul ecx, ecx, 20
+	add rsi, rcx
+	; (edx) compute loop delta
+	mov edx, 1
+	mov edi, -1
+	cmp eax, ebx
+	cmovg edx, edi
+place_connection_horz__next:
+	mov m8 [rsi+rax], 1
+	add eax, edx
+	cmp eax, ebx
+	jne place_connection_horz__next
+	ret
+
+; @eax: y0
+; @ebx: y1
+; @ecx: x
+place_connection_vert:
+	; compute p1, p2
+	lea rsi, [tilemap]
+	add rsi, rcx
+	imul rax, rax, 20
+	imul rbx, rbx, 20
+	add rax, rsi
+	add rbx, rsi
+	; if p1 > p2, swap them
+	cmp rax, rbx
+	jle place_connection_vert__next
+	xchg rax, rbx
+place_connection_vert__next:
+	mov m8 [rax], 1
+	add rax, 20
+	cmp rax, rbx
+	jle place_connection_vert__next
 	ret
 
 xauth:
@@ -537,16 +656,16 @@ char_y:
 
 tilemap:
 	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-	.i8 0 0 0 0 0 0 0 0 0 0 0 1 1 0 0 0 0 0 0 0
-	.i8 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0
-	.i8 0 0 1 1 1 1 0 0 0 1 1 1 1 0 0 0 1 0 0 0
-	.i8 0 0 1 1 1 0 0 0 0 1 1 0 0 0 0 1 1 1 0 0
-	.i8 0 0 1 1 1 0 0 0 0 1 0 0 0 1 1 1 1 1 0 0
-	.i8 0 0 0 0 1 0 0 0 0 0 0 0 0 1 0 1 1 1 0 0
-	.i8 0 0 0 0 1 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0
-	.i8 0 0 0 0 1 0 0 1 1 1 1 1 1 1 0 0 0 0 0 0
-	.i8 0 0 0 0 1 1 1 1 0 1 1 1 1 0 0 0 0 0 0 0
-	.i8 0 0 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 	.i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0

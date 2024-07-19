@@ -201,7 +201,6 @@ rdrand eax
 mov [rng_state], eax
 
 call generate_map
-
 call draw_tilemap
 call draw_char
 
@@ -260,6 +259,7 @@ process_keydown:
 	je process_keydown__move_up
 	cmp eax, 0x1b ; is it 'r' key
 	jne main_loop
+	call clear_map
 	call generate_map
 	call clear_screen
 	call draw_tilemap
@@ -453,50 +453,216 @@ move_char__done:
 	pop r8
 	ret
 
+clear_map:
+	lea rax, [tilemap]
+	xor ebx, ebx
+clear_map__next:
+	mov m32 [rax+rbx*4], 0
+	inc ebx
+	cmp ebx, 75
+	jl clear_map__next
+	ret
+
 generate_map:
-	; clear all tiles
-	lea rsi, [tilemap]
-	xor ecx, ecx
-generate_map__next:
-	mov m32 [rsi+rcx*4], 0
-	inc ecx
-	cmp ecx, 75
-	jl generate_map__next
-	; place anc connect hardcoded rooms
+	push r8
+	push r9
+	sub rsp, 32 ; max rooms * 4
+
+	xor r8d, r8d ; room count
+
+	; place first room
+	mov rbx, rsp
+	call random_room
+	inc r8d
+
+	mov r9d, 1000 ; max number of attempts
+generate_map__next_room:
+	lea rbx, [rsp+r8*4]
+	call random_room
+	lea rbx, [rsp+r8*4]
+	lea rcx, [rsp]
+	mov edx, r8d
+	call room_placeable
+	test eax, eax
+	jnz generate_map__next_attempt
+	inc r8d
+	cmp r8d, 6
+	je generate_map__rooms_generated
+generate_map__next_attempt:
+	dec r9d
+	jnz generate_map__next_room
+
+generate_map__rooms_generated:
+	; place rooms
+	xor r9d, r9d
+generate_map__place_next:
+	movzx eax, m8 [rsp+r9*4+0]
+	movzx ebx, m8 [rsp+r9*4+1]
+	movzx ecx, m8 [rsp+r9*4+2]
+	movzx edx, m8 [rsp+r9*4+3]
+	call place_room
+	inc r9d
+	cmp r9d, r8d
+	jl generate_map__place_next
+
+	; connect rooms
+	mov r9, rsp
+generate_map__next_connection:
+	cmp r8d, 2
+	jl generate_map__rooms_connected
+	movzx eax, m8 [r9+0]
+	movzx ebx, m8 [r9+1]
+	movzx ecx, m8 [r9+4]
+	movzx edx, m8 [r9+5]
+	call place_connection
+	add r9, 4
+	dec r8d
+	jmp generate_map__next_connection
+generate_map__rooms_connected:
+
+	; set character starting pos to first room
+	mov al, [rsp]
+	mov bl, [rsp+1]
+	mov [char_x], al
+	mov [char_y], bl
+
+	add rsp, 32
+	pop r9
+	pop r8
+	ret
+
+; room dst: rbx
+random_room:
+	push r8
+	push r9
+	push r10
+	push r11
+	push r12
+	; (r12) store room dst
+	mov r12, rbx
+	; (r10d) randomly pick width
 	mov eax, 2
-	mov ebx, 1
-	mov ecx, 6
-	mov edx, 6
-	call place_room
-	mov eax, 9
-	mov ebx, 8
-	mov ecx, 14
-	mov edx, 12
-	call place_room
-	mov eax, 15
-	mov ebx, 3
-	mov ecx, 18
-	mov edx, 7
-	call place_room
+	call random_int
+	add eax, 2
+	mov r10d, eax
+	; (r11d) randomly pick height
 	mov eax, 2
-	mov ebx, 1
-	mov ecx, 9
-	mov edx, 8
-	call place_connection
-	mov eax, 9
-	mov ebx, 8
-	mov ecx, 15
-	mov edx, 3
-	call place_connection
-	mov eax, 15
-	mov ebx, 3
-	mov ecx, 2
-	mov edx, 1
-	call place_connection
+	call random_int
+	add eax, 2
+	mov r11d, eax
+	; (r8d) randomly pick x0
+	mov eax, 18
+	sub eax, r10d
+	call random_int
+	inc eax
+	mov r8d, eax
+	; (r9d) randomly pick y0
+	mov eax, 13
+	sub eax, r11d
+	call random_int
+	inc eax
+	mov r9d, eax
+	; (r10d, r11d) compute x1, y1
+	add r10d, r8d
+	add r11d, r9d
+	; if x0 > x1, swap them
+	cmp r8d, r10d
+	jle random_room__x_good
+	xchg r8d, r10d
+random_room__x_good:
+	; if y0 > y1, swap them
+	cmp r9d, r11d
+	jle random_room__y_good
+	xchg r9d, r11d
+random_room__y_good:
+	; store the room in the rooms array
+	mov [r12+0], r8b
+	mov [r12+1], r9b
+	mov [r12+2], r10b
+	mov [r12+3], r11b
+random_room__done:
+	pop r12
+	pop r11
+	pop r10
+	pop r9
+	pop r8
+	ret
+
+; room: rbx, rooms: rcx, count: edx
+room_placeable:
+	push r8
+	push r9
+	push r10
+	push r11
+
+	mov r8, rbx   ; room
+	mov r9, rcx   ; rooms
+	mov r10d, edx ; count
+	mov r11, 1
+
+room_placeable__next:
+	mov rbx, r8
+	mov rcx, r9
+	call room_intersects
+	test eax, eax
+	jnz room_placeable__done
+	add r9, 4
+	dec r10d
+	jnz room_placeable__next
+
+	xor r11d, r11d
+room_placeable__done:
+	mov eax, r11d
+	pop r11
+	pop r10
+	pop r9
+	pop r8
+	ret
+
+; new room: rbx, existing room: rcx
+; -> eax
+room_intersects:
+	xor eax, eax
+	; ax0 > bx1?
+	movzx edx, m8 [rbx]
+	movzx edi, m8 [rcx+2]
+	inc edi
+	cmp edx, edi
+	jg room_intersects__done
+	; ax1 < bx0?
+	movzx edx, m8 [rbx+2]
+	movzx edi, m8 [rcx]
+	dec edi
+	cmp edx, edi
+	jl room_intersects__done
+	; ay0 > by1?
+	movzx edx, m8 [rbx+1]
+	movzx edi, m8 [rcx+3]
+	inc edi
+	cmp edx, edi
+	jg room_intersects__done
+	; ay1 < by0?
+	movzx edx, m8 [rbx+3]
+	movzx edi, m8 [rcx+1]
+	dec edi
+	cmp edx, edi
+	jl room_intersects__done
+	mov eax, 1
+room_intersects__done:
 	ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx
 place_room:
+	; if x0 > x1, swap them
+	cmp eax, ecx
+	jle place_room__x_good
+	xchg eax, ecx
+place_room__x_good:
+	; if y0 > y1, swap them
+	cmp ebx, edx
+	jle place_room__y_good
+	xchg ebx, edx
+place_room__y_good:
 	lea rsi, [tilemap]
 	imul edi, ebx, 20
 	add rsi, rdi
@@ -506,11 +672,11 @@ place_room__column:
 	mov m8 [rsi+rdi], 1
 	inc edi
 	cmp edi, ecx
-	jne place_room__column
+	jle place_room__column
 	add rsi, 20
 	inc ebx
 	cmp ebx, edx
-	jne place_room__row
+	jle place_room__row
 	ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx
@@ -606,6 +772,18 @@ xorshift32:
 	shl ebx, 5
 	xor eax, ebx
 	mov [rng_state], eax
+	ret
+
+; max: eax
+; -> result: eax
+random_int:
+	push r8
+	mov r8d, eax
+	call xorshift32
+	xor edx, edx
+	div r8d
+	mov eax, edx
+	pop r8
 	ret
 
 xauth:

@@ -170,7 +170,7 @@ enum Op {
     Rel32,
 }
 
-const REGS8: [&str; 4] = ["al", "cl", "dl", "bl"];
+const REGS8: [&str; 12] = ["al", "cl", "dl", "bl", "", "", "", "", "r8b", "r9b", "r10b", "r11b"];
 
 const REGS32: [&str; 16] = [
     "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d",
@@ -481,7 +481,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 64] = [
+    static INSNS: [Insn; 67] = [
         insn("add",     RM32,  R32,   None,  0,     &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,   None,  REX_W, &[0x01],       0, Enc::MR),
         insn("add",     RM32,  Imm8,  None,  0,     &[0x83],       0, Enc::MI),
@@ -501,6 +501,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("cmp",     R32,   Imm32, None,  0,     &[0x81],       7, Enc::MI),
         insn("dec",     RM32,  None,  None,  0,     &[0xff],       1, Enc::M),
         insn("dec",     RM64,  None,  None,  REX_W, &[0xff],       1, Enc::M),
+        insn("div",     RM32,  None,  None,  0,     &[0xf7],       6, Enc::M),
         insn("imul",    R32,   RM32,  None,  0,     &[0x0f, 0xaf], 0, Enc::RM),
         insn("imul",    R32,   RM32,  Imm8,  0,     &[0x6b],       0, Enc::RMI),
         insn("imul",    R32,   RM32,  Imm32, 0,     &[0x69],       0, Enc::RMI),
@@ -510,6 +511,8 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("int3",    None,  None,  None,  0,     &[0xcc],       0, Enc::ZO),
         insn("jae",     Rel32, None,  None,  0,     &[0x0f, 0x83], 0, Enc::D),
         insn("je",      Rel32, None,  None,  0,     &[0x0f, 0x84], 0, Enc::D),
+        insn("jg",      Rel32, None,  None,  0,     &[0x0f, 0x8f], 0, Enc::D),
+        insn("jge",     Rel32, None,  None,  0,     &[0x0f, 0x8d], 0, Enc::D),
         insn("jl",      Rel32, None,  None,  0,     &[0x0f, 0x8c], 0, Enc::D),
         insn("jle",     Rel32, None,  None,  0,     &[0x0f, 0x8e], 0, Enc::D),
         insn("jmp",     Rel32, None,  None,  0,     &[0xe9],       0, Enc::D),

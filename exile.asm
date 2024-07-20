@@ -202,7 +202,11 @@ mov [rng_state], eax
 
 call generate_map
 call draw_tilemap
-call draw_char
+
+mov eax, 3
+movzx ebx, m8 [char_x]
+movzx ecx, m8 [char_y]
+call draw_sprite
 
 main_loop:
 ; read event
@@ -263,7 +267,12 @@ process_keydown:
 	call generate_map
 	call clear_screen
 	call draw_tilemap
-	call draw_char
+
+	mov eax, 3
+	movzx ebx, m8 [char_x]
+	movzx ecx, m8 [char_y]
+	call draw_sprite
+
 	jmp refresh_screen
 process_keydown__move_right:
 	mov ebx, 1
@@ -296,40 +305,45 @@ exit:
 	xor edi, edi
 	syscall
 
-draw_char:
-	lea rsi, [char]
+; sprite: eax, x: ebx, y: ecx
+draw_sprite:
+	push r8
+	lea rsi, [sprites]
+	;sub rsi, 18 ; TODO: should be part of previous insn
 	lea rdi, [screen]
-	movzx eax, m8 [char_x]
-	movzx ebx, m8 [char_y]
-	imul eax, eax, 96
-	imul ebx, ebx, 46080
-	add rdi, rax
+	imul ebx, ebx, 96
+	imul ecx, ecx, 46080
+	imul eax, eax, 18
 	add rdi, rbx
+	add rdi, rcx
+	add rsi, rax
 	mov ecx, 9  ; 16-bit value counter
 	mov edx, 12 ; column counter
-draw_char_0:
+draw_sprite__0:
 	movzx eax, m16 [rsi]
 	mov ebx, 16 ; bit count
-draw_char_1:
+draw_sprite__1:
+	xor r8d, r8d
+	mov ebp, 0xffffff
 	test eax, 1
-	jz draw_char_2
-	mov m32 [rdi], 0xffffffff
-	mov m32 [rdi+4], 0xffffffff
-	mov m32 [rdi+1920], 0xffffffff
-	mov m32 [rdi+1920+4], 0xffffffff
-draw_char_2:
+	cmovnz r8d, ebp
+	mov m32 [rdi], r8d
+	mov m32 [rdi+4], r8d
+	mov m32 [rdi+1920], r8d
+	mov m32 [rdi+1920+4], r8d
 	add rdi, 8
 	dec edx
-	jnz draw_char_3
+	jnz draw_sprite__2
 	add rdi, 3744 ; move down 2 lines in the screen buffer
 	mov edx, 12
-draw_char_3:
+draw_sprite__2:
 	shr eax, 1
 	dec ebx
-	jnz draw_char_1
+	jnz draw_sprite__1
 	add rsi, 2
 	dec ecx
-	jnz draw_char_0
+	jnz draw_sprite__0
+	pop r8
 	ret
 
 ; @ebx: x coord
@@ -362,11 +376,11 @@ draw_tilemap__row:
 draw_tilemap__column:
 	movzx eax, m8 [r8]
 	inc r8
-	cmp eax, 1
-	jne draw_tilemap__next_tile
+	and eax, 0x7f
+	jz draw_tilemap__next_tile
 	mov ebx, r9d
 	mov ecx, r10d
-	call draw_tile
+	call draw_sprite
 draw_tilemap__next_tile:
 	inc r9d
 	cmp r9d, 20
@@ -377,27 +391,6 @@ draw_tilemap__next_tile:
 	pop r10
 	pop r9
 	pop r8
-	ret
-
-; @ebx: tile x
-; @ecx: tile y
-clear_tile:
-	lea rdi, [screen]
-	imul ebx, ebx, 96
-	imul ecx, ecx, 46080
-	add rdi, rbx
-	add rdi, rcx
-	mov ebx, 24 ; y counter
-clear_cell_row:
-	xor eax, eax ; x counter
-clear_cell_column:
-	mov m32 [rdi+rax*4], 0
-	inc eax
-	cmp eax, 24
-	jne clear_cell_column
-	add rdi, 1920
-	dec ebx
-	jnz clear_cell_row
 	ret
 
 clear_screen:
@@ -427,27 +420,26 @@ move_char:
 	add eax, ebx
 	; check if the tile is walkable
 	lea rsi, [tilemap]
-	cmp m8 [rsi+rax], 0
-	je move_char__done
+	test m8 [rsi+rax], 0x80
+	jz move_char__done
 	; store new character coords
 	mov [char_x], bl
 	mov [char_y], cl
-	; clear the previously occupied tile
-	mov ebx, r8d
-	mov ecx, r9d
-	call clear_tile
 	; get offset into the tilemap for the old coords
 	imul eax, r9d, 20
 	add eax, r8d
 	; if the tile has a sprite, redraw it
-	lea rsi, [tilemap]
-	cmp m8 [rsi+rax], 1
-	jne move_char__draw_char
+	movzx eax, m8 [rsi+rax]
+	and eax, 0x7f
+	jz move_char__draw_char
 	mov ebx, r8d
 	mov ecx, r9d
-	call draw_tile
+	call draw_sprite
 move_char__draw_char:
-	call draw_char
+	mov eax, 3
+	movzx ebx, m8 [char_x]
+	movzx ecx, m8 [char_y]
+	call draw_sprite
 move_char__done:
 	pop r9
 	pop r8
@@ -475,7 +467,7 @@ generate_map:
 	call random_room
 	inc r8d
 
-	mov r9d, 1000 ; max number of attempts
+	mov r9d, 500 ; max number of attempts
 generate_map__next_room:
 	lea rbx, [rsp+r8*4]
 	call random_room
@@ -486,7 +478,7 @@ generate_map__next_room:
 	test eax, eax
 	jnz generate_map__next_attempt
 	inc r8d
-	cmp r8d, 6
+	cmp r8d, 8
 	je generate_map__rooms_generated
 generate_map__next_attempt:
 	dec r9d
@@ -510,10 +502,28 @@ generate_map__place_next:
 generate_map__next_connection:
 	cmp r8d, 2
 	jl generate_map__rooms_connected
+	; get center coords for first room
 	movzx eax, m8 [r9+0]
 	movzx ebx, m8 [r9+1]
+	movzx ecx, m8 [r9+2]
+	movzx edx, m8 [r9+3]
+	sub ecx, eax
+	sub edx, ebx
+	shr ecx, 1
+	shr edx, 1
+	add eax, ecx
+	add ebx, edx
+	; get center coords for second room
 	movzx ecx, m8 [r9+4]
 	movzx edx, m8 [r9+5]
+	movzx esi, m8 [r9+6]
+	movzx edi, m8 [r9+7]
+	sub esi, ecx
+	sub edi, edx
+	shr esi, 1
+	shr edi, 1
+	add ecx, esi
+	add edx, edi
 	call place_connection
 	add r9, 4
 	dec r8d
@@ -525,6 +535,23 @@ generate_map__rooms_connected:
 	mov bl, [rsp+1]
 	mov [char_x], al
 	mov [char_y], bl
+
+	; postprocess
+	mov r8d, 20
+	lea r9, [tilemap]
+	add r9, 20
+generate_map__next_tile:
+	lea rax, [r9+r8]
+	cmp m8 [rax], 0
+	jne generate_map__no_change
+	sub rax, 20
+	test m8 [rax], 0x80
+	jz generate_map__no_change
+	mov m8 [r9+r8], 2
+generate_map__no_change:
+	inc r8d
+	cmp r8d, 280
+	jl generate_map__next_tile
 
 	add rsp, 32
 	pop r9
@@ -543,12 +570,12 @@ random_room:
 	; (r10d) randomly pick width
 	mov eax, 2
 	call random_int
-	add eax, 2
+	add eax, 1
 	mov r10d, eax
 	; (r11d) randomly pick height
 	mov eax, 2
 	call random_int
-	add eax, 2
+	add eax, 1
 	mov r11d, eax
 	; (r8d) randomly pick x0
 	mov eax, 18
@@ -669,7 +696,7 @@ place_room__y_good:
 place_room__row:
 	mov edi, eax
 place_room__column:
-	mov m8 [rsi+rdi], 1
+	mov m8 [rsi+rdi], 0x81
 	inc edi
 	cmp edi, ecx
 	jle place_room__column
@@ -730,7 +757,7 @@ place_connection_horz:
 	cmovg edx, edi
 	add ebx, edx
 place_connection_horz__next:
-	mov m8 [rsi+rax], 1
+	mov m8 [rsi+rax], 0x81
 	add eax, edx
 	cmp eax, ebx
 	jne place_connection_horz__next
@@ -750,7 +777,7 @@ place_connection_vert:
 	jle place_connection_vert__next
 	xchg rax, rbx
 place_connection_vert__next:
-	mov m8 [rax], 1
+	mov m8 [rax], 0x81
 	add rax, 20
 	cmp rax, rbx
 	jle place_connection_vert__next
@@ -883,7 +910,10 @@ intern_atom_wm_delete_window:
 	.i32 16; length of name
 	.i8 "WM_DELETE_WINDOW"
 
-char:
+sprites:
+	.i16 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000
+	.i16 0x2000 0x1048 0x0242 0x1480 0x3569 0x6820 0x4024 0x914c 0x2004
+	.i16 0xf000 0xf7ff 0x77ef 0x09d9 0x0000 0x0000 0x0000 0x0000 0x0000
 	.i16 0x0000 0xe000 0x1f00 0x0160 0xc012 0x0100 0xc138 0x1833 0x0002
 
 char_x:

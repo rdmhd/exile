@@ -481,7 +481,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 75] = [
+    static INSNS: [Insn; 76] = [
         insn("add",     RM32,  R32,   None,  0,     &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,   None,  REX_W, &[0x01],       0, Enc::MR),
         insn("add",     RM32,  Imm8,  None,  0,     &[0x83],       0, Enc::MI),
@@ -490,9 +490,10 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("add",     RM64,  Imm32, None,  REX_W, &[0x81],       0, Enc::MI),
         insn("and",     RM32,  Imm8,  None,  0    , &[0x83],       4, Enc::MI),
         insn("call",    Rel32, None,  None,  0,     &[0xe8],       0, Enc::D),
-        insn("cmovnz",  R32,   RM32,  None,  0,     &[0x0f, 0x45], 0, Enc::RM),
+        insn("cmove",   R32,   RM32,  None,  0,     &[0x0f, 0x44], 0, Enc::RM),
         insn("cmovg",   R32,   RM32,  None,  0,     &[0x0f, 0x4f], 0, Enc::RM),
         insn("cmovg",   R64,   RM64,  None,  REX_W, &[0x0f, 0x4f], 0, Enc::RM),
+        insn("cmovnz",  R32,   RM32,  None,  0,     &[0x0f, 0x45], 0, Enc::RM),
         insn("cmovz",   R32,   RM32,  None,  0,     &[0x0f, 0x44], 0, Enc::RM),
         insn("cmp",     RM32,  R32,   None,  0,     &[0x39],       0, Enc::MR),
         insn("cmp",     RM64,  R64,   None,  REX_W, &[0x39],       0, Enc::MR),

@@ -202,11 +202,7 @@ mov [rng_state], eax
 
 call generate_map
 call draw_tilemap
-
-mov eax, 3
-movzx ebx, m8 [char_x]
-movzx ecx, m8 [char_y]
-call draw_sprite
+call draw_char
 
 main_loop:
 ; read event
@@ -267,12 +263,7 @@ process_keydown:
 	call generate_map
 	call clear_screen
 	call draw_tilemap
-
-	mov eax, 3
-	movzx ebx, m8 [char_x]
-	movzx ecx, m8 [char_y]
-	call draw_sprite
-
+	call draw_char
 	jmp refresh_screen
 process_keydown__move_right:
 	mov ebx, 1
@@ -305,8 +296,58 @@ exit:
 	xor edi, edi
 	syscall
 
+draw_char:
+	push r8
+	push r9
+
+	movzx eax, m8 [char_x]
+	movzx ebx, m8 [char_y]
+	lea rcx, [screen]
+	imul eax, eax, 96
+	imul ebx, ebx, 46080
+	add rcx, rax
+	add rcx, rbx
+
+	xor r8d, r8d ; val counter
+	xor r9d, r9d ; x counter
+
+draw_char__0:
+	lea rax, [char]
+	mov eax, [rax+r8*4]
+	mov ebx, 16
+draw_char__1:
+	mov ebp, eax
+	and ebp, 0x3
+	jz draw_char__2
+	mov esi, 0xffffff
+	mov edi, 0x000000
+	cmp ebp, 0x2
+	cmove esi, edi
+	mov m32 [rcx], esi
+	mov m32 [rcx+4], esi
+	mov m32 [rcx+1920], esi
+	mov m32 [rcx+1920+4], esi
+draw_char__2:
+	inc r9d
+	cmp r9d, 12
+	jne draw_char__3
+	add rcx, 3744
+	xor r9d, r9d
+draw_char__3:
+	add rcx, 8
+	shr eax, 2
+	dec ebx
+	jnz draw_char__1
+	inc r8d
+	cmp r8d, 9
+	jl draw_char__0
+
+	pop r8
+	pop r9
+	ret
+
 ; sprite: eax, x: ebx, y: ecx
-draw_sprite:
+draw_tile:
 	push r8
 	lea rsi, [sprites]
 	;sub rsi, 18 ; TODO: should be part of previous insn
@@ -319,10 +360,10 @@ draw_sprite:
 	add rsi, rax
 	mov ecx, 9  ; 16-bit value counter
 	mov edx, 12 ; column counter
-draw_sprite__0:
+draw_tile__0:
 	movzx eax, m16 [rsi]
 	mov ebx, 16 ; bit count
-draw_sprite__1:
+draw_tile__1:
 	xor r8d, r8d
 	mov ebp, 0xffffff
 	test eax, 1
@@ -333,36 +374,17 @@ draw_sprite__1:
 	mov m32 [rdi+1920+4], r8d
 	add rdi, 8
 	dec edx
-	jnz draw_sprite__2
+	jnz draw_tile__2
 	add rdi, 3744 ; move down 2 lines in the screen buffer
 	mov edx, 12
-draw_sprite__2:
+draw_tile__2:
 	shr eax, 1
 	dec ebx
-	jnz draw_sprite__1
+	jnz draw_tile__1
 	add rsi, 2
 	dec ecx
-	jnz draw_sprite__0
+	jnz draw_tile__0
 	pop r8
-	ret
-
-; @ebx: x coord
-; @ecx: y coord
-draw_tile:
-	; get offset to the screen buffer
-	imul ebx, ebx, 96
-	imul ecx, ecx, 46080
-	lea rdi, [screen]
-	add rdi, rbx
-	add rdi, rcx
-	; move to the center of the tile
-	add rdi, 23088
-	; draw a dot (2x2 pixels)
-	mov eax, 0x666666
-	mov [rdi], eax
-	mov [rdi+4], eax
-	mov [rdi+1920], eax
-	mov [rdi+1920+4], eax
 	ret
 
 draw_tilemap:
@@ -380,7 +402,7 @@ draw_tilemap__column:
 	jz draw_tilemap__next_tile
 	mov ebx, r9d
 	mov ecx, r10d
-	call draw_sprite
+	call draw_tile
 draw_tilemap__next_tile:
 	inc r9d
 	cmp r9d, 20
@@ -434,12 +456,9 @@ move_char:
 	jz move_char__draw_char
 	mov ebx, r8d
 	mov ecx, r9d
-	call draw_sprite
+	call draw_tile
 move_char__draw_char:
-	mov eax, 3
-	movzx ebx, m8 [char_x]
-	movzx ecx, m8 [char_y]
-	call draw_sprite
+	call draw_char
 move_char__done:
 	pop r9
 	pop r8
@@ -530,9 +549,17 @@ generate_map__next_connection:
 	jmp generate_map__next_connection
 generate_map__rooms_connected:
 
-	; set character starting pos to first room
-	mov al, [rsp]
-	mov bl, [rsp+1]
+	; set character starting pos to center of first room
+	movzx eax, m8 [rsp]
+	movzx ebx, m8 [rsp+1]
+	movzx ecx, m8 [rsp+2]
+	movzx edx, m8 [rsp+3]
+	sub ecx, eax
+	sub edx, ebx
+	shr ecx, 1
+	shr edx, 1
+	add eax, ecx
+	add ebx, edx
 	mov [char_x], al
 	mov [char_y], bl
 
@@ -912,9 +939,11 @@ intern_atom_wm_delete_window:
 
 sprites:
 	.i16 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000
-	.i16 0x2000 0x1048 0x0242 0x1480 0x3569 0x6820 0x4024 0x914c 0x2004
+	.i16 0x2000 0x1048 0x0002 0x9480 0x0100 0x4000 0x4020 0x9100 0x2004
 	.i16 0xf000 0xf7ff 0x77ef 0x09d9 0x0000 0x0000 0x0000 0x0000 0x0000
-	.i16 0x0000 0xe000 0x1f00 0x0160 0xc012 0x0100 0xc138 0x1833 0x0002
+
+char:
+	.i32 0x80002a00 0x95a000aa 0x0a556802 0xa00a65a0 0x96a00a69 0x02aa6802 0x560a695a 0xaa5a2969 0x0aaaa829
 
 char_x:
 	.i8 3

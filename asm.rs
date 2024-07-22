@@ -170,7 +170,9 @@ enum Op {
     Rel32,
 }
 
-const REGS8: [&str; 12] = ["al", "cl", "dl", "bl", "", "", "", "", "r8b", "r9b", "r10b", "r11b"];
+const REGS8: [&str; 12] = [
+    "al", "cl", "dl", "bl", "", "", "", "", "r8b", "r9b", "r10b", "r11b",
+];
 
 const REGS32: [&str; 16] = [
     "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d",
@@ -335,14 +337,6 @@ fn fmt_error(err: Error, input: &str, path: &str) -> String {
         off = spaces + prefix.len(),
         msg = err.msg
     )
-
-    //eprintln!("{prefix}{line}", line = &input[beg..end]);
-    //eprintln!(
-    //    "{:<off$}^ {msg}",
-    //    "",
-    //    off = spaces + prefix.len(),
-    //    msg = err.msg
-    //);
 }
 
 fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> {
@@ -354,30 +348,55 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
 
     advance(&mut cur);
 
-    let mut labels = HashMap::<&str, i64>::new();
-    let mut patches = Vec::<Patch>::new();
-
-    let mut out = Output {
-        data: out,
-        buf: [0; 16],
-        len: 0,
-        rex: 0,
+    let mut ctx = Context {
+        labels: HashMap::<&str, i64>::new(),
+        local_labels: HashMap::<&str, i64>::new(),
+        patches: Vec::<Patch>::new(),
+        local_patches: Vec::<Patch>::new(),
+        out: Output {
+            data: out,
+            buf: [0; 16],
+            len: 0,
+            rex: 0,
+        },
     };
 
     loop {
         skip_whitespace(&mut cur);
 
         if match_char('.', &mut cur) {
+            let label_at = cur.off - 1;
             if let Some((ident, at)) = match_identifier(&mut cur, &input) {
-                skip_whitespace(&mut cur);
-                asm_directive(ident, at, &mut cur, out.data)?;
+                if match_char(':', &mut cur) {
+                    if ctx.labels.is_empty() {
+                        return error_at(label_at, "local label declared in global scope");
+                    }
+                    if ctx
+                        .local_labels
+                        .insert(ident, ctx.out.data.len() as i64)
+                        .is_some()
+                    {
+                        return error_at(label_at, "label with this name already exists");
+                    }
+                } else {
+                    skip_whitespace(&mut cur);
+                    asm_directive(ident, at, &mut cur, ctx.out.data)?;
+                }
             } else {
                 return error_at(cur.off, "expected directive name");
             }
         } else if let Some((ident, at)) = match_identifier(&mut cur, &input) {
             if match_char(':', &mut cur) {
+                apply_patches(&ctx.local_labels, &ctx.local_patches, &mut ctx.out)?;
+                ctx.local_labels.clear();
+                ctx.local_patches.clear();
+
                 skip_whitespace(&mut cur);
-                if labels.insert(ident, out.data.len() as i64).is_some() {
+                if ctx
+                    .labels
+                    .insert(ident, ctx.out.data.len() as i64)
+                    .is_some()
+                {
                     return error_at(at, "label with this name already exists");
                 }
             } else {
@@ -416,7 +435,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
                 }
 
                 if let Some(insn) = choose_insn(mnemonic, &arg1, &arg2, &arg3) {
-                    let beg = out.data.len();
+                    let beg = ctx.out.data.len();
                     if verbose {
                         eprintln!(
                             "  {op1:?} {op2:?} {op3:?} | {enc:?}",
@@ -426,9 +445,9 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
                             enc = insn.encoding,
                         );
                     }
-                    emit_insn(insn, &arg1, &arg2, &arg3, &mut out, &mut patches, &labels)?;
+                    emit_insn(insn, &arg1, &arg2, &arg3, &mut ctx)?;
                     if verbose {
-                        eprintln!("  {:02x?}", &out.data[beg..]);
+                        eprintln!("  {:02x?}", &ctx.out.data[beg..]);
                     }
                 } else {
                     return error_at(at, "unknown instruction");
@@ -456,6 +475,17 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
         return error_at(cur.off, "invalid input");
     }
 
+    apply_patches(&ctx.local_labels, &ctx.local_patches, &mut ctx.out)?;
+    apply_patches(&ctx.labels, &ctx.patches, &mut ctx.out)?;
+
+    Ok(())
+}
+
+fn apply_patches(
+    labels: &HashMap<&str, i64>,
+    patches: &Vec<Patch>,
+    out: &mut Output,
+) -> Result<(), Error> {
     for patch in patches {
         let mut disp = patch.disp;
         if let Some(&addr) = labels.get(patch.label) {
@@ -882,6 +912,14 @@ fn match_argument<'a>(cur: &mut Cursor, input: &'a str) -> Result<Option<Arg<'a>
         } else {
             Ok(Some(Arg::Rel32((ident, at))))
         }
+    } else if match_char('.', cur) {
+        let beg = cur.off - 1;
+        if let Some((_, _)) = match_identifier(cur, input) {
+            let label = &input[beg..cur.off];
+            Ok(Some(Arg::Rel32((label, beg))))
+        } else {
+            error_at(cur.off, "expected label name")
+        }
     } else if let Some((imm, at, is_hex)) = match_integer(cur)? {
         if imm == 1 {
             Ok(Some(Arg::One))
@@ -1024,9 +1062,16 @@ fn parse_register(name: &str) -> Option<Arg> {
     }
 }
 
+struct Context<'a> {
+    patches: Vec<Patch<'a>>,
+    labels: HashMap<&'a str, i64>,
+    local_patches: Vec<Patch<'a>>,
+    local_labels: HashMap<&'a str, i64>,
+    out: Output<'a>,
+}
+
 struct Output<'a> {
     data: &'a mut Vec<u8>,
-
     buf: [u8; 16],
     len: usize,
     rex: u32,
@@ -1043,15 +1088,14 @@ fn emit_insn<'a>(
     arg1: &Arg<'a>,
     arg2: &Arg<'a>,
     arg3: &Arg<'a>,
-    out: &mut Output,
-    patches: &mut Vec<Patch<'a>>,
-    labels: &HashMap<&str, i64>,
+    ctx: &mut Context<'a>,
 ) -> Result<(), Error> {
-    out.len = insn.opcodes.len();
-    out.rex = insn.rex as u32;
+    ctx.out.len = insn.opcodes.len();
+    ctx.out.rex = insn.rex as u32;
 
     unsafe {
-        out.buf
+        ctx.out
+            .buf
             .as_mut_ptr()
             .copy_from_nonoverlapping(insn.opcodes.as_ptr(), insn.opcodes.len())
     };
@@ -1062,44 +1106,44 @@ fn emit_insn<'a>(
             let mut reg = arg1.reg();
             if reg >= 8 {
                 reg -= 8;
-                out.rex |= REX_B as u32;
+                ctx.out.rex |= REX_B as u32;
             }
 
-            out.buf[out.len - 1] += reg as u8;
+            ctx.out.buf[ctx.out.len - 1] += reg as u8;
             if insn.encoding == Enc::OI {
-                write_imm(arg2.imm(), insn.op2, out);
+                write_imm(arg2.imm(), insn.op2, &mut ctx.out);
             }
         }
         Enc::RM => {
-            emit_modrm(arg1.reg(), arg2, out, patches, labels)?;
+            emit_modrm(arg1.reg(), arg2, ctx)?;
         }
         Enc::MR => {
-            emit_modrm(arg2.reg(), arg1, out, patches, labels)?;
+            emit_modrm(arg2.reg(), arg1, ctx)?;
         }
         Enc::MI => {
-            emit_modrm(insn.reg as u32, arg1, out, patches, labels)?;
-            write_imm(arg2.imm(), insn.op2, out);
+            emit_modrm(insn.reg as u32, arg1, ctx)?;
+            write_imm(arg2.imm(), insn.op2, &mut ctx.out);
         }
-        Enc::M1 => emit_modrm(insn.reg as u32, arg1, out, patches, labels)?,
+        Enc::M1 => emit_modrm(insn.reg as u32, arg1, ctx)?,
         Enc::D => {
             let Arg::Rel32((label, at)) = *arg1 else {
                 panic!()
             };
-            emit_rel32((label, at), 0, labels, patches, out)?;
+            emit_rel32((label, at), 0, ctx)?;
         }
-        Enc::M => emit_modrm(insn.reg as u32, arg1, out, patches, labels)?,
-        Enc::I2 => write_imm(arg2.imm(), insn.op2, out),
+        Enc::M => emit_modrm(insn.reg as u32, arg1, ctx)?,
+        Enc::I2 => write_imm(arg2.imm(), insn.op2, &mut ctx.out),
         Enc::RMI => {
-            emit_modrm(arg1.reg(), arg2, out, patches, labels)?;
-            write_imm(arg3.imm(), insn.op3, out);
+            emit_modrm(arg1.reg(), arg2, ctx)?;
+            write_imm(arg3.imm(), insn.op3, &mut ctx.out);
         }
     }
 
-    if out.rex != 0 {
-        out.data.push(out.rex as u8);
+    if ctx.out.rex != 0 {
+        ctx.out.data.push(ctx.out.rex as u8);
     }
 
-    out.data.extend_from_slice(&out.buf[..out.len]);
+    ctx.out.data.extend_from_slice(&ctx.out.buf[..ctx.out.len]);
 
     Ok(())
 }
@@ -1107,21 +1151,25 @@ fn emit_insn<'a>(
 fn emit_rel32<'a>(
     (label, at): (&'a str, usize),
     disp: i64,
-    labels: &HashMap<&str, i64>,
-    patches: &mut Vec<Patch<'a>>,
-    out: &mut Output,
+    ctx: &mut Context<'a>,
 ) -> Result<(), Error> {
+    let (label, labels, patches) = if label.starts_with(".") {
+        (&label[1..], &mut ctx.local_labels, &mut ctx.local_patches)
+    } else {
+        (label, &mut ctx.labels, &mut ctx.patches)
+    };
+
     if let Some(&off) = labels.get(label) {
-        let rel = out.pos() + 4 - off;
+        let rel = ctx.out.pos() + 4 - off;
         if rel <= i32::max_value() as i64 {
-            write32((-rel) as u32, out);
+            write32((-rel) as u32, &mut ctx.out);
         } else {
             return error_at(at, "distance to target is too large");
         }
     } else {
-        out.len += 4; // make space for the immediate value
+        ctx.out.len += 4; // make space for the immediate value
         patches.push(Patch {
-            off: out.pos(),
+            off: ctx.out.pos(),
             label,
             at,
             disp,
@@ -1167,13 +1215,9 @@ fn emit64(val: u64, out: &mut Vec<u8>) {
     out.extend(val);
 }
 
-fn emit_modrm<'a>(
-    mut reg: u32,
-    rm: &Arg<'a>,
-    out: &mut Output,
-    patches: &mut Vec<Patch<'a>>,
-    labels: &HashMap<&str, i64>,
-) -> Result<(), Error> {
+fn emit_modrm<'a>(mut reg: u32, rm: &Arg<'a>, ctx: &mut Context<'a>) -> Result<(), Error> {
+    let out = &mut ctx.out;
+
     if reg >= 8 {
         reg -= 8;
         out.rex |= REX_R as u32;
@@ -1191,7 +1235,7 @@ fn emit_modrm<'a>(
                 assert!(addr.index.is_none());
 
                 write_modrm(0b00, reg, 0b101, out);
-                emit_rel32((label, at), addr.disp, labels, patches, out)?;
+                emit_rel32((label, at), addr.disp, ctx)?;
             } else {
                 assert!(addr.label.is_none()); // TODO: this should be caught by the parser
 
@@ -1523,9 +1567,74 @@ mod tests {
         r.fail("add eax, -2147483649", 9);
 
         r.pass("add eax, 0xff", &[0x83, 0b11_000_000, 0xff]);
-        r.pass("add eax, 0x0100", &[0x81, 0b11_000_000, 0x00, 0x01, 0x00, 0x00]);
-        r.pass("add eax, 0xffffffff", &[0x81, 0b11_000_000, 0xff, 0xff, 0xff, 0xff]);
+        r.pass(
+            "add eax, 0x0100",
+            &[0x81, 0b11_000_000, 0x00, 0x01, 0x00, 0x00],
+        );
+        r.pass(
+            "add eax, 0xffffffff",
+            &[0x81, 0b11_000_000, 0xff, 0xff, 0xff, 0xff],
+        );
         r.fail("add eax, 0x100000000", 9);
+
+        assert!(!r.failed);
+    }
+
+    #[test]
+    fn test_local_labels() {
+        let mut r = Runner::new();
+
+        r.pass(
+            "proc:\n\
+                xor eax, eax\n\
+                mov ebx, 7\n\
+            .next:\n\
+                inc eax\n\
+                cmp eax, 5\n\
+                je .done\n\
+                dec ebx\n\
+                jnz .next\n\
+            .done:\n\
+                ret",
+            &[
+                0x31, 0xc0, 0xbb, 0x07, 0x00, 0x00, 0x00, 0xff, 0xc0, 0x83, 0xf8, 0x05, 0x0f, 0x84,
+                0x08, 0x00, 0x00, 0x00, 0xff, 0xcb, 0x0f, 0x85, 0xed, 0xff, 0xff, 0xff, 0xc3,
+            ],
+        );
+
+        r.pass(
+            "proc:\n\
+              mov eax, 5\n\
+            .next:\n\
+              dec eax\n\
+              jnz .next\n\
+              ret\n\
+            proc2:\n\
+              mov eax, 3\n\
+            .next:\n\
+              dec eax\n\
+              jnz .next\n\
+              ret",
+            &[
+                0xb8, 0x05, 0x00, 0x00, 0x00, 0xff, 0xc8, 0x0f, 0x85, 0xf8, 0xff, 0xff, 0xff, 0xc3,
+                0xb8, 0x03, 0x00, 0x00, 0x00, 0xff, 0xc8, 0x0f, 0x85, 0xf8, 0xff, 0xff, 0xff, 0xc3,
+            ],
+        );
+
+        // missing label
+        r.fail("jmp .done", 4);
+
+        // label declared twice
+        r.fail("proc:\n.done:\n.done:", 13);
+
+        // label declared in different scope
+        r.fail("proc:\njmp .done\nproc2:.done:", 10);
+
+        // label declared in global scope
+        r.fail(".done:", 0);
+
+        // '.done' and 'done' are different labels
+        r.fail("done:\njmp .done", 10);
 
         assert!(!r.failed);
     }

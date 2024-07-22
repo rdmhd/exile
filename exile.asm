@@ -2,20 +2,20 @@ read_xauthority_cookie:
 	mov rsi, [rsp]          ; get number of command line args
 	lea rsi, [rsp+rsi*8+16] ; get address of first environment var
 	lea rbx, [xauth]        ; "XAUTHORITY" string
-next_variable:
+.next_variable:
 	mov rcx, [rsi]          ; tested env variable
 	test ecx, ecx           ; zero means end of env var array
 	jz open_connection      ; if there is no $XAUTHORITY go straight to opening a connection
 	add rsi, 8
 	xor edx, edx            ; loop counter
-next_char:
+.next_char:
 	mov al, [rcx+rdx]       ; read character from tested var
 	cmp al, [rbx+rdx]       ; compare it to the xauth string
-	jne next_variable
+	jne .next_variable
 	inc edx
 	cmp edx, 11             ; reached end of xauth string?
-	jne next_char
-found_path:
+	jne .next_char
+
 	lea rdi, [rcx+rdx]
 	mov eax, 2 ; open
 	xor esi, esi
@@ -242,21 +242,21 @@ process_keydown:
 	cmp eax, 0x18 ; is it 'Q'
 	je exit
 	cmp eax, 0x72 ; is it right arrow key
-	je process_keydown__move_right
+	je .move_right
 	cmp eax, 0x2e ; is it 'l' key
-	je process_keydown__move_right
+	je .move_right
 	cmp eax, 0x74 ; is it down arrow key
-	je process_keydown__move_down
+	je .move_down
 	cmp eax, 0x2c ; is it 'j' key
-	je process_keydown__move_down
+	je .move_down
 	cmp eax, 0x71 ; is it left arrow key
-	je process_keydown__move_left
+	je .move_left
 	cmp eax, 0x2b ; is it 'h' key
-	je process_keydown__move_left
+	je .move_left
 	cmp eax, 0x6f ; is it up arrow key
-	je process_keydown__move_up
+	je .move_up
 	cmp eax, 0x2d ; is it 'k' key
-	je process_keydown__move_up
+	je .move_up
 	cmp eax, 0x1b ; is it 'r' key
 	jne main_loop
 	call clear_map
@@ -265,22 +265,22 @@ process_keydown:
 	call draw_tilemap
 	call draw_char
 	jmp refresh_screen
-process_keydown__move_right:
+.move_right:
 	mov ebx, 1
 	xor ecx, ecx
 	call move_char
 	jmp refresh_screen
-process_keydown__move_down:
+.move_down:
 	xor ebx, ebx
 	mov ecx, 1
 	call move_char
 	jmp refresh_screen
-process_keydown__move_left:
+.move_left:
 	mov ebx, -1
 	xor ecx, ecx
 	call move_char
 	jmp refresh_screen
-process_keydown__move_up:
+.move_up:
 	xor ebx, ebx
 	mov ecx, -1
 	call move_char
@@ -311,14 +311,14 @@ draw_char:
 	xor r8d, r8d ; val counter
 	xor r9d, r9d ; x counter
 
-draw_char__0:
+.l0:
 	lea rax, [char]
 	mov eax, [rax+r8*4]
 	mov ebx, 16
-draw_char__1:
+.l1:
 	mov ebp, eax
 	and ebp, 0x3
-	jz draw_char__2
+	jz .l2
 	mov esi, 0xffffff
 	mov edi, 0x000000
 	cmp ebp, 0x2
@@ -327,20 +327,20 @@ draw_char__1:
 	mov m32 [rcx+4], esi
 	mov m32 [rcx+1920], esi
 	mov m32 [rcx+1920+4], esi
-draw_char__2:
+.l2:
 	inc r9d
 	cmp r9d, 12
-	jne draw_char__3
+	jne .l3
 	add rcx, 3744
 	xor r9d, r9d
-draw_char__3:
+.l3:
 	add rcx, 8
 	shr eax, 2
 	dec ebx
-	jnz draw_char__1
+	jnz .l1
 	inc r8d
 	cmp r8d, 9
-	jl draw_char__0
+	jl .l0
 
 	pop r8
 	pop r9
@@ -350,7 +350,6 @@ draw_char__3:
 draw_tile:
 	push r8
 	lea rsi, [sprites]
-	;sub rsi, 18 ; TODO: should be part of previous insn
 	lea rdi, [screen]
 	imul ebx, ebx, 96
 	imul ecx, ecx, 46080
@@ -360,10 +359,10 @@ draw_tile:
 	add rsi, rax
 	mov ecx, 9  ; 16-bit value counter
 	mov edx, 12 ; column counter
-draw_tile__0:
+.l0:
 	movzx eax, m16 [rsi]
 	mov ebx, 16 ; bit count
-draw_tile__1:
+.l1:
 	xor r8d, r8d
 	mov ebp, 0xffffff
 	test eax, 1
@@ -374,16 +373,16 @@ draw_tile__1:
 	mov m32 [rdi+1920+4], r8d
 	add rdi, 8
 	dec edx
-	jnz draw_tile__2
+	jnz .l2
 	add rdi, 3744 ; move down 2 lines in the screen buffer
 	mov edx, 12
-draw_tile__2:
+.l2:
 	shr eax, 1
 	dec ebx
-	jnz draw_tile__1
+	jnz .l1
 	add rsi, 2
 	dec ecx
-	jnz draw_tile__0
+	jnz .l0
 	pop r8
 	ret
 
@@ -393,23 +392,23 @@ draw_tilemap:
 	push r10
 	lea r8, [tilemap]
 	xor r10d, r10d ; y counter
-draw_tilemap__row:
+.row:
 	xor r9d, r9d ; x counter
-draw_tilemap__column:
+.column:
 	movzx eax, m8 [r8]
 	inc r8
 	and eax, 0x7f
-	jz draw_tilemap__next_tile
+	jz .next_tile
 	mov ebx, r9d
 	mov ecx, r10d
 	call draw_tile
-draw_tilemap__next_tile:
+.next_tile:
 	inc r9d
 	cmp r9d, 20
-	jne draw_tilemap__column
+	jne .column
 	inc r10d
 	cmp r10d, 15
-	jne draw_tilemap__row
+	jne .row
 	pop r10
 	pop r9
 	pop r8
@@ -419,11 +418,11 @@ clear_screen:
 	; TODO: rep stosb?
 	lea rax, [screen]
 	xor ebx, ebx
-clear_screen__next:
+.next:
 	mov m64 [rax+rbx*8], 0
 	inc ebx
 	cmp ebx, 86400
-	jl clear_screen__next
+	jl .next
 	ret
 
 ; @ebx: delta x
@@ -443,7 +442,7 @@ move_char:
 	; check if the tile is walkable
 	lea rsi, [tilemap]
 	test m8 [rsi+rax], 0x80
-	jz move_char__done
+	jz .done
 	; store new character coords
 	mov [char_x], bl
 	mov [char_y], cl
@@ -453,13 +452,13 @@ move_char:
 	; if the tile has a sprite, redraw it
 	movzx eax, m8 [rsi+rax]
 	and eax, 0x7f
-	jz move_char__draw_char
+	jz .draw_char
 	mov ebx, r8d
 	mov ecx, r9d
 	call draw_tile
-move_char__draw_char:
+.draw_char:
 	call draw_char
-move_char__done:
+.done:
 	pop r9
 	pop r8
 	ret
@@ -467,11 +466,11 @@ move_char__done:
 clear_map:
 	lea rax, [tilemap]
 	xor ebx, ebx
-clear_map__next:
+.next:
 	mov m32 [rax+rbx*4], 0
 	inc ebx
 	cmp ebx, 75
-	jl clear_map__next
+	jl .next
 	ret
 
 generate_map:
@@ -487,7 +486,7 @@ generate_map:
 	inc r8d
 
 	mov r9d, 500 ; max number of attempts
-generate_map__next_room:
+.next_room:
 	lea rbx, [rsp+r8*4]
 	call random_room
 	lea rbx, [rsp+r8*4]
@@ -495,18 +494,18 @@ generate_map__next_room:
 	mov edx, r8d
 	call room_placeable
 	test eax, eax
-	jnz generate_map__next_attempt
+	jnz .next_attempt
 	inc r8d
 	cmp r8d, 8
-	je generate_map__rooms_generated
-generate_map__next_attempt:
+	je .rooms_generated
+.next_attempt:
 	dec r9d
-	jnz generate_map__next_room
+	jnz .next_room
 
-generate_map__rooms_generated:
+.rooms_generated:
 	; place rooms
 	xor r9d, r9d
-generate_map__place_next:
+.place_next:
 	movzx eax, m8 [rsp+r9*4+0]
 	movzx ebx, m8 [rsp+r9*4+1]
 	movzx ecx, m8 [rsp+r9*4+2]
@@ -514,13 +513,13 @@ generate_map__place_next:
 	call place_room
 	inc r9d
 	cmp r9d, r8d
-	jl generate_map__place_next
+	jl .place_next
 
 	; connect rooms
 	mov r9, rsp
-generate_map__next_connection:
+.next_connection:
 	cmp r8d, 2
-	jl generate_map__rooms_connected
+	jl .rooms_connected
 	; get center coords for first room
 	movzx eax, m8 [r9+0]
 	movzx ebx, m8 [r9+1]
@@ -546,8 +545,8 @@ generate_map__next_connection:
 	call place_connection
 	add r9, 4
 	dec r8d
-	jmp generate_map__next_connection
-generate_map__rooms_connected:
+	jmp .next_connection
+.rooms_connected:
 
 	; set character starting pos to center of first room
 	movzx eax, m8 [rsp]
@@ -567,18 +566,18 @@ generate_map__rooms_connected:
 	mov r8d, 20
 	lea r9, [tilemap]
 	add r9, 20
-generate_map__next_tile:
+.next_tile:
 	lea rax, [r9+r8]
 	cmp m8 [rax], 0
-	jne generate_map__no_change
+	jne .no_change
 	sub rax, 20
 	test m8 [rax], 0x80
-	jz generate_map__no_change
+	jz .no_change
 	mov m8 [r9+r8], 2
-generate_map__no_change:
+.no_change:
 	inc r8d
 	cmp r8d, 280
-	jl generate_map__next_tile
+	jl .next_tile
 
 	add rsp, 32
 	pop r9
@@ -621,20 +620,20 @@ random_room:
 	add r11d, r9d
 	; if x0 > x1, swap them
 	cmp r8d, r10d
-	jle random_room__x_good
+	jle .x_good
 	xchg r8d, r10d
-random_room__x_good:
+.x_good:
 	; if y0 > y1, swap them
 	cmp r9d, r11d
-	jle random_room__y_good
+	jle .y_good
 	xchg r9d, r11d
-random_room__y_good:
+.y_good:
 	; store the room in the rooms array
 	mov [r12+0], r8b
 	mov [r12+1], r9b
 	mov [r12+2], r10b
 	mov [r12+3], r11b
-random_room__done:
+.done:
 	pop r12
 	pop r11
 	pop r10
@@ -654,18 +653,18 @@ room_placeable:
 	mov r10d, edx ; count
 	mov r11, 1
 
-room_placeable__next:
+.next:
 	mov rbx, r8
 	mov rcx, r9
 	call room_intersects
 	test eax, eax
-	jnz room_placeable__done
+	jnz .done
 	add r9, 4
 	dec r10d
-	jnz room_placeable__next
+	jnz .next
 
 	xor r11d, r11d
-room_placeable__done:
+.done:
 	mov eax, r11d
 	pop r11
 	pop r10
@@ -682,55 +681,55 @@ room_intersects:
 	movzx edi, m8 [rcx+2]
 	inc edi
 	cmp edx, edi
-	jg room_intersects__done
+	jg .done
 	; ax1 < bx0?
 	movzx edx, m8 [rbx+2]
 	movzx edi, m8 [rcx]
 	dec edi
 	cmp edx, edi
-	jl room_intersects__done
+	jl .done
 	; ay0 > by1?
 	movzx edx, m8 [rbx+1]
 	movzx edi, m8 [rcx+3]
 	inc edi
 	cmp edx, edi
-	jg room_intersects__done
+	jg .done
 	; ay1 < by0?
 	movzx edx, m8 [rbx+3]
 	movzx edi, m8 [rcx+1]
 	dec edi
 	cmp edx, edi
-	jl room_intersects__done
+	jl .done
 	mov eax, 1
-room_intersects__done:
+.done:
 	ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx
 place_room:
 	; if x0 > x1, swap them
 	cmp eax, ecx
-	jle place_room__x_good
+	jle .x_good
 	xchg eax, ecx
-place_room__x_good:
+.x_good:
 	; if y0 > y1, swap them
 	cmp ebx, edx
-	jle place_room__y_good
+	jle .y_good
 	xchg ebx, edx
-place_room__y_good:
+.y_good:
 	lea rsi, [tilemap]
 	imul edi, ebx, 20
 	add rsi, rdi
-place_room__row:
+.row:
 	mov edi, eax
-place_room__column:
+.column:
 	mov m8 [rsi+rdi], 0x81
 	inc edi
 	cmp edi, ecx
-	jle place_room__column
+	jle .column
 	add rsi, 20
 	inc ebx
 	cmp ebx, edx
-	jle place_room__row
+	jle .row
 	ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx
@@ -745,7 +744,7 @@ place_connection:
 	mov r11d, edx ; store y1
 	call xorshift32
 	and eax, 1
-	jz place_connection__vert_first
+	jz .vert_first
 	mov eax, r8d
 	mov ebx, r10d
 	mov ecx, r9d
@@ -754,8 +753,8 @@ place_connection:
 	mov ebx, r11d
 	mov ecx, r10d
 	call place_connection_vert
-	jmp place_connection__done
-place_connection__vert_first:
+	jmp .done
+.vert_first:
 	mov eax, r9d
 	mov ebx, r11d
 	mov ecx, r8d
@@ -764,7 +763,7 @@ place_connection__vert_first:
 	mov ebx, r10d
 	mov ecx, r11d
 	call place_connection_horz
-place_connection__done:
+.done:
 	pop r11
 	pop r10
 	pop r9
@@ -783,11 +782,11 @@ place_connection_horz:
 	cmp eax, ebx
 	cmovg edx, edi
 	add ebx, edx
-place_connection_horz__next:
+.next:
 	mov m8 [rsi+rax], 0x81
 	add eax, edx
 	cmp eax, ebx
-	jne place_connection_horz__next
+	jne .next
 	ret
 
 ; y0: eax, y1: ebx, x: ecx
@@ -801,13 +800,13 @@ place_connection_vert:
 	add rbx, rsi
 	; if p1 > p2, swap them
 	cmp rax, rbx
-	jle place_connection_vert__next
+	jle .next
 	xchg rax, rbx
-place_connection_vert__next:
+.next:
 	mov m8 [rax], 0x81
 	add rax, 20
 	cmp rax, rbx
-	jle place_connection_vert__next
+	jle .next
 	ret
 
 ; -> rng state: eax

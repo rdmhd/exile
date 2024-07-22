@@ -13,7 +13,7 @@ struct Addr<'a> {
     disp: i64,
     #[allow(dead_code)]
     disp_at: usize,
-    label: Option<(&'a str, usize)>,
+    label: Option<(LabelName<'a>, usize)>,
 }
 
 enum Arg<'a> {
@@ -31,7 +31,7 @@ enum Arg<'a> {
     Mem16(Addr<'a>),
     Mem32(Addr<'a>),
     Mem64(Addr<'a>),
-    Rel32((&'a str, usize)),
+    Rel32((LabelName<'a>, usize)),
 }
 
 impl Arg<'_> {
@@ -66,7 +66,18 @@ impl Display for Arg<'_> {
             Arg::One => write!(f, "1 (exact)"),
             Arg::Imm8(imm) => write!(f, "{imm} (imm8)"),
             Arg::Imm32(imm) => write!(f, "{imm} (imm32)"),
-            Arg::Rel32((label, _)) => write!(f, "\"{label}\" (rel32)"),
+            Arg::Rel32((label, _)) => {
+                if label.1.is_empty() {
+                    write!(f, "\"{global}\" (rel32)", global = label.0)
+                } else {
+                    write!(
+                        f,
+                        "\"{global}.{local}\" (rel32)",
+                        global = label.0,
+                        local = label.1
+                    )
+                }
+            }
             Arg::Mem(addr)
             | Arg::Mem8(addr)
             | Arg::Mem16(addr)
@@ -95,9 +106,9 @@ impl Display for Arg<'_> {
                 scale = addr.scale,
                 disp = addr.disp,
                 label = if let Some((label, _)) = addr.label {
-                    label
+                    format!("{}.{}", label.0, label.1)
                 } else {
-                    "_"
+                    "".to_owned()
                 }
             ),
         }
@@ -118,7 +129,7 @@ struct Error {
 
 struct Patch<'a> {
     off: i64,
-    label: &'a str,
+    label: LabelName<'a>,
     at: usize,
     disp: i64,
 }
@@ -349,16 +360,15 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
     advance(&mut cur);
 
     let mut ctx = Context {
-        labels: HashMap::<&str, i64>::new(),
-        local_labels: HashMap::<&str, i64>::new(),
-        patches: Vec::<Patch>::new(),
-        local_patches: Vec::<Patch>::new(),
+        labels: HashMap::new(),
+        patches: Vec::new(),
         out: Output {
             data: out,
             buf: [0; 16],
             len: 0,
             rex: 0,
         },
+        curr_label: "",
     };
 
     loop {
@@ -368,15 +378,14 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
             let label_at = cur.off - 1;
             if let Some((ident, at)) = match_identifier(&mut cur, &input) {
                 if match_char(':', &mut cur) {
-                    if ctx.labels.is_empty() {
-                        return error_at(label_at, "local label declared in global scope");
-                    }
-                    if ctx
-                        .local_labels
-                        .insert(ident, ctx.out.data.len() as i64)
-                        .is_some()
-                    {
-                        return error_at(label_at, "label with this name already exists");
+                    match ctx.labels.get_mut(ctx.curr_label) {
+                        Some(label) => {
+                            let off = ctx.out.data.len() as i64;
+                            if label.locals.insert(ident, off).is_some() {
+                                return error_at(label_at, "label with this name already exists");
+                            };
+                        }
+                        None => return error_at(label_at, "local label declared in global scope"),
                     }
                 } else {
                     skip_whitespace(&mut cur);
@@ -387,18 +396,18 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
             }
         } else if let Some((ident, at)) = match_identifier(&mut cur, &input) {
             if match_char(':', &mut cur) {
-                apply_patches(&ctx.local_labels, &ctx.local_patches, &mut ctx.out)?;
-                ctx.local_labels.clear();
-                ctx.local_patches.clear();
+                let label = Label {
+                    off: ctx.out.data.len() as i64,
+                    locals: HashMap::new(),
+                };
 
-                skip_whitespace(&mut cur);
-                if ctx
-                    .labels
-                    .insert(ident, ctx.out.data.len() as i64)
-                    .is_some()
-                {
+                if ctx.labels.insert(ident, label).is_some() {
                     return error_at(at, "label with this name already exists");
                 }
+
+                ctx.curr_label = ident;
+
+                skip_whitespace(&mut cur);
             } else {
                 skip_whitespace(&mut cur);
 
@@ -407,13 +416,13 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
                 let mut arg2 = Arg::None;
                 let mut arg3 = Arg::None;
 
-                if let Some(arg) = match_argument(&mut cur, &input)? {
+                if let Some(arg) = match_argument(&mut cur, &input, ctx.curr_label)? {
                     arg1 = arg;
                     skip_whitespace(&mut cur);
 
                     if match_char(',', &mut cur) {
                         skip_whitespace(&mut cur);
-                        if let Some(arg) = match_argument(&mut cur, &input)? {
+                        if let Some(arg) = match_argument(&mut cur, &input, ctx.curr_label)? {
                             arg2 = arg;
                         } else {
                             return error_at(cur.off, "expected operand after ','");
@@ -421,7 +430,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
 
                         if match_char(',', &mut cur) {
                             skip_whitespace(&mut cur);
-                            if let Some(arg) = match_argument(&mut cur, &input)? {
+                            if let Some(arg) = match_argument(&mut cur, &input, ctx.curr_label)? {
                                 arg3 = arg;
                             } else {
                                 return error_at(cur.off, "expected operand after ','");
@@ -475,21 +484,40 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
         return error_at(cur.off, "invalid input");
     }
 
-    apply_patches(&ctx.local_labels, &ctx.local_patches, &mut ctx.out)?;
+    if verbose {
+        for (name, label) in &ctx.labels {
+            println!("[{off:08x}] {name}", off = label.off);
+            for (name, off) in &label.locals {
+                println!("  [{off:08x}] {name}");
+            }
+        }
+    }
+
     apply_patches(&ctx.labels, &ctx.patches, &mut ctx.out)?;
 
     Ok(())
 }
 
+fn resolve_label(name: &LabelName, labels: &HashMap<&str, Label>) -> Option<i64> {
+    if let Some(label) = labels.get(name.0) {
+        if name.1.is_empty() {
+            return Some(label.off);
+        } else if let Some(&off) = label.locals.get(name.1) {
+            return Some(off);
+        }
+    }
+    None
+}
+
 fn apply_patches(
-    labels: &HashMap<&str, i64>,
+    labels: &HashMap<&str, Label>,
     patches: &Vec<Patch>,
     out: &mut Output,
 ) -> Result<(), Error> {
     for patch in patches {
         let mut disp = patch.disp;
-        if let Some(&addr) = labels.get(patch.label) {
-            disp += addr as i64 - patch.off as i64; // TODO: check that it fits within i32
+        if let Some(off) = resolve_label(&patch.label, labels) {
+            disp += off as i64 - patch.off as i64; // TODO: check that it fits within i32
 
             // TODO: this assumes that the displacement is always 32-bits, for enabling disp8
             // the offset will need to be stored with the patch
@@ -498,6 +526,7 @@ fn apply_patches(
                     .write_unaligned(disp as i32);
             };
         } else {
+            eprintln!("!!! \"{}\" \"{}\"", patch.label.0, patch.label.1); 
             return error_at(patch.at, "missing label");
         }
     }
@@ -876,7 +905,27 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize, bool)>, Error> 
     }
 }
 
-fn match_argument<'a>(cur: &mut Cursor, input: &'a str) -> Result<Option<Arg<'a>>, Error> {
+fn parse_label<'a>(
+    (global, at): (&'a str, usize),
+    cur: &mut Cursor,
+    input: &'a str,
+) -> Result<(LabelName<'a>, usize), Error> {
+    if match_char('.', cur) {
+        if let Some((local, _)) = match_identifier(cur, input) {
+            Ok(((global, local), at))
+        } else {
+            return error_at(cur.off, "expected local label name");
+        }
+    } else {
+        Ok(((global, ""), at))
+    }
+}
+
+fn match_argument<'a>(
+    cur: &mut Cursor,
+    input: &'a str,
+    label: &'a str,
+) -> Result<Option<Arg<'a>>, Error> {
     if let Some((ident, at)) = match_identifier(cur, input) {
         // TODO: collapse m* cases
         if ident == "m8" {
@@ -910,13 +959,13 @@ fn match_argument<'a>(cur: &mut Cursor, input: &'a str) -> Result<Option<Arg<'a>
         } else if let Some(reg) = parse_register(ident) {
             Ok(Some(reg))
         } else {
-            Ok(Some(Arg::Rel32((ident, at))))
+            let label = parse_label((ident, at), cur, input)?;
+            Ok(Some(Arg::Rel32(label)))
         }
     } else if match_char('.', cur) {
-        let beg = cur.off - 1;
-        if let Some((_, _)) = match_identifier(cur, input) {
-            let label = &input[beg..cur.off];
-            Ok(Some(Arg::Rel32((label, beg))))
+        let at = cur.off - 1;
+        if let Some((ident, _)) = match_identifier(cur, input) {
+            Ok(Some(Arg::Rel32(((label, ident), at))))
         } else {
             error_at(cur.off, "expected label name")
         }
@@ -1014,7 +1063,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
                     }
                 }
             } else {
-                label = Some((ident, at));
+                label = Some(parse_label((ident, at), cur, input)?);
             }
         } else if let Some((int, at, _)) = match_integer(cur)? {
             if disp_at == 0 {
@@ -1064,10 +1113,9 @@ fn parse_register(name: &str) -> Option<Arg> {
 
 struct Context<'a> {
     patches: Vec<Patch<'a>>,
-    labels: HashMap<&'a str, i64>,
-    local_patches: Vec<Patch<'a>>,
-    local_labels: HashMap<&'a str, i64>,
+    labels: HashMap<&'a str, Label<'a>>,
     out: Output<'a>,
+    curr_label: &'a str,
 }
 
 struct Output<'a> {
@@ -1081,6 +1129,13 @@ impl Output<'_> {
     fn pos(&self) -> i64 {
         (self.data.len() + self.len + if self.rex != 0 { 1 } else { 0 }) as i64
     }
+}
+
+type LabelName<'a> = (&'a str, &'a str);
+
+struct Label<'a> {
+    off: i64,
+    locals: HashMap<&'a str, i64>,
 }
 
 fn emit_insn<'a>(
@@ -1149,17 +1204,11 @@ fn emit_insn<'a>(
 }
 
 fn emit_rel32<'a>(
-    (label, at): (&'a str, usize),
+    (label, at): (LabelName<'a>, usize),
     disp: i64,
     ctx: &mut Context<'a>,
 ) -> Result<(), Error> {
-    let (label, labels, patches) = if label.starts_with(".") {
-        (&label[1..], &mut ctx.local_labels, &mut ctx.local_patches)
-    } else {
-        (label, &mut ctx.labels, &mut ctx.patches)
-    };
-
-    if let Some(&off) = labels.get(label) {
+    if let Some(off) = resolve_label(&label, &ctx.labels) {
         let rel = ctx.out.pos() + 4 - off;
         if rel <= i32::max_value() as i64 {
             write32((-rel) as u32, &mut ctx.out);
@@ -1168,7 +1217,7 @@ fn emit_rel32<'a>(
         }
     } else {
         ctx.out.len += 4; // make space for the immediate value
-        patches.push(Patch {
+        ctx.patches.push(Patch {
             off: ctx.out.pos(),
             label,
             at,
@@ -1621,14 +1670,25 @@ mod tests {
             ],
         );
 
+        r.pass(
+            "lea rax, [data.x]\n\
+             lea rbx, [data.y]\n\
+             data:\n\
+                .x:\n.i8 10\n\
+                .y:\n.i8 20",
+            &[0x48, 0x8d, 0x05, 0x07, 0x00, 0x00, 0x00,
+              0x48, 0x8d, 0x1d, 0x01, 0x00, 0x00, 0x00,
+              0x0a, 0x14]);
+
         // missing label
         r.fail("jmp .done", 4);
+        r.fail("lea rax, [doesnt.exist]", 10);
 
         // label declared twice
         r.fail("proc:\n.done:\n.done:", 13);
 
         // label declared in different scope
-        r.fail("proc:\njmp .done\nproc2:.done:", 10);
+        r.fail("proc:\njmp .done\nproc2:\n.done:", 10);
 
         // label declared in global scope
         r.fail(".done:", 0);

@@ -25,7 +25,7 @@ read_xauthority_cookie:
 
 	mov eax, 17 ; pread
 	mov edi, ebx
-	lea rsi, [conn_request_cookie]
+	lea rsi, [conn_request.cookie]
 	mov edx, 16
 	mov r10d, 38
 	syscall
@@ -74,23 +74,23 @@ je exit_error
 ; store gc id
 mov eax, [rsp+12]
 mov [create_gc+4], eax
-mov [put_image_gc], eax
+mov [put_image.gc], eax
 
 ; store window id
 inc eax
-mov [create_window_id], eax
+mov [create_window.id], eax
 mov [map_window+4], eax
-mov [put_image_window], eax
-mov [change_wm_class_window], eax
-mov [change_wm_name_window], eax
-mov [change_wm_protocols_window], eax
+mov [put_image.window], eax
+mov [change_wm_class.window], eax
+mov [change_wm_name.window], eax
+mov [change_wm_protocols.window], eax
 
 ; store window root
 movzx ebx, m16 [rsp+24] ; read 'length of vendor' ; TODO: align to multiples of 4
 movzx ecx, m8 [rsp+29]  ; read 'number of formats'
 lea rbx, [rbx+rcx*8]    ; skip past 'vendor' and 'formats'
 mov eax, [rsp+rbx+40]
-mov [create_window_parent], eax
+mov [create_window.parent], eax
 mov [create_gc+8], eax
 
 ; query big-requests extension
@@ -157,7 +157,7 @@ mov rsi, rsp
 mov edx, 32
 syscall
 movzx eax, m16 [rsp+8]
-mov [change_wm_protocols_property], eax
+mov [change_wm_protocols.property], eax
 
 ; intern WM_DELETE_WINDOW atom
 mov eax, 1
@@ -171,7 +171,7 @@ mov rsi, rsp
 mov edx, 32
 syscall
 movzx eax, m16 [rsp+8]
-mov [change_wm_protocols_value], eax
+mov [change_wm_protocols.value], eax
 
 ; change window WM_PROTOCOLS property
 mov eax, 1
@@ -219,11 +219,11 @@ main_loop:
 	cmp eax, 161 ; what is this event?
 	jne main_loop
 	mov eax, [rsp+8]
-	mov ebx, [change_wm_protocols_property]
+	mov ebx, [change_wm_protocols.property]
 	cmp eax, ebx
 	jne main_loop
 	mov eax, [rsp+12]
-	mov ebx, [change_wm_protocols_value]
+	mov ebx, [change_wm_protocols.value]
 	cmp eax, ebx
 	jne main_loop
 	jmp exit
@@ -855,16 +855,16 @@ conn_request:
 	.i16 16                      ; auth protocol data length
 	.i8 0 0                      ; pad
 	.i8 "MIT-MAGIC-COOKIE-1" 0 0 ; auth protocol name
-conn_request_cookie:
+.cookie:
 	.res 16
 
 create_window:
 	.i8 1                ; opcode
 	.i8 0                ; depth
 	.i16 9               ; length
-create_window_id:
+.id:
 	.i32 0               ; window id
-create_window_parent:
+.parent:
 	.i32 0               ; parent id
 	.i16 0 0 480 360 ; x, y, width, height
 	.i16 0 1             ; border, class
@@ -896,7 +896,7 @@ big_req_enable:
 change_wm_class:
 	.i8 18 0                   ; opcode, "replace"
 	.i16 9                     ; length
-change_wm_class_window:
+.window:
 	.i32 0                     ; window id
 	.i32 67 31                 ; property (WM_CLASS), type (STRING)
 	.i32 8                     ; format
@@ -906,7 +906,7 @@ change_wm_class_window:
 change_wm_name:
 	.i8 18 0 ; opcode, "replace"
 	.i16 8 ; length
-change_wm_name_window:
+.window:
 	.i32 0 ; window id
 	.i32 39 31 ; property (WM_NAME), type (STRING)
 	.i32 8 ; format
@@ -916,14 +916,14 @@ change_wm_name_window:
 change_wm_protocols:
 	.i8 18 0 ; opcode, "replace"
 	.i16 7 ; length
-change_wm_protocols_window:
+.window:
 	.i32 0 ; window id
-change_wm_protocols_property:
+.property:
 	.i32 0 
 	.i32 4 ; type (ATOM)
 	.i32 32 ; format
 	.i32 1 ; length
-change_wm_protocols_value:
+.value:
 	.i32 0
 
 intern_atom_wm_protocols:
@@ -974,9 +974,9 @@ put_image:
 	.i8 2            ; format (ZPixmap)
 	.i16 0           ; length (0 to allow big request)
 	.i32 172807      ; actual length
-put_image_window:
+.window:
 	.i32 0           ; window id
-put_image_gc:
+.gc:
 	.i32 0           ; gc id
 	.i16 480 360 0 0 ; width, height,x, y
 	.i8 0 24 0 0     ; left-pad, depth

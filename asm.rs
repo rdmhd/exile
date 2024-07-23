@@ -387,6 +387,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
                         }
                         None => return error_at(label_at, "local label declared in global scope"),
                     }
+                    continue;
                 } else {
                     skip_whitespace(&mut cur);
                     asm_directive(ident, at, &mut cur, ctx.out.data)?;
@@ -394,7 +395,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
             } else {
                 return error_at(cur.off, "expected directive name");
             }
-        } else if let Some((ident, at)) = match_identifier(&mut cur, &input) {
+        } else if let Some((ident, at)) = match_identifier(&mut cur, input) {
             if match_char(':', &mut cur) {
                 let label = Label {
                     off: ctx.out.data.len() as i64,
@@ -408,59 +409,11 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
                 ctx.curr_label = ident;
 
                 skip_whitespace(&mut cur);
+                continue;
             } else {
                 skip_whitespace(&mut cur);
 
-                let mnemonic = ident;
-                let mut arg1 = Arg::None;
-                let mut arg2 = Arg::None;
-                let mut arg3 = Arg::None;
-
-                if let Some(arg) = match_argument(&mut cur, &input, ctx.curr_label)? {
-                    arg1 = arg;
-                    skip_whitespace(&mut cur);
-
-                    if match_char(',', &mut cur) {
-                        skip_whitespace(&mut cur);
-                        if let Some(arg) = match_argument(&mut cur, &input, ctx.curr_label)? {
-                            arg2 = arg;
-                        } else {
-                            return error_at(cur.off, "expected operand after ','");
-                        }
-
-                        if match_char(',', &mut cur) {
-                            skip_whitespace(&mut cur);
-                            if let Some(arg) = match_argument(&mut cur, &input, ctx.curr_label)? {
-                                arg3 = arg;
-                            } else {
-                                return error_at(cur.off, "expected operand after ','");
-                            }
-                        }
-                    }
-                }
-
-                if verbose {
-                    eprintln!("{mnemonic} {arg1}, {arg2}, {arg3}");
-                }
-
-                if let Some(insn) = choose_insn(mnemonic, &arg1, &arg2, &arg3) {
-                    let beg = ctx.out.data.len();
-                    if verbose {
-                        eprintln!(
-                            "  {op1:?} {op2:?} {op3:?} | {enc:?}",
-                            op1 = insn.op1,
-                            op2 = insn.op2,
-                            op3 = insn.op3,
-                            enc = insn.encoding,
-                        );
-                    }
-                    emit_insn(insn, &arg1, &arg2, &arg3, &mut ctx)?;
-                    if verbose {
-                        eprintln!("  {:02x?}", &ctx.out.data[beg..]);
-                    }
-                } else {
-                    return error_at(at, "unknown instruction");
-                }
+                asm_instruction((ident, at), &mut cur, input, &mut ctx, verbose)?;
             }
         }
 
@@ -526,7 +479,6 @@ fn apply_patches(
                     .write_unaligned(disp as i32);
             };
         } else {
-            eprintln!("!!! \"{}\" \"{}\"", patch.label.0, patch.label.1); 
             return error_at(patch.at, "missing label");
         }
     }
@@ -699,6 +651,66 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
             Rel32 => matches!(arg, Arg::Rel32(_)),
         }
     }
+}
+
+fn asm_instruction<'a>(
+    (mnemonic, at): (&str, usize),
+    cur: &mut Cursor,
+    input: &'a str,
+    ctx: &mut Context<'a>,
+    verbose: bool,
+) -> Result<(), Error> {
+    let mut arg1 = Arg::None;
+    let mut arg2 = Arg::None;
+    let mut arg3 = Arg::None;
+
+    if let Some(arg) = match_argument(cur, input, ctx.curr_label)? {
+        arg1 = arg;
+        skip_whitespace(cur);
+
+        if match_char(',', cur) {
+            skip_whitespace(cur);
+            if let Some(arg) = match_argument(cur, input, ctx.curr_label)? {
+                arg2 = arg;
+            } else {
+                return error_at(cur.off, "expected operand after ','");
+            }
+
+            if match_char(',', cur) {
+                skip_whitespace(cur);
+                if let Some(arg) = match_argument(cur, input, ctx.curr_label)? {
+                    arg3 = arg;
+                } else {
+                    return error_at(cur.off, "expected operand after ','");
+                }
+            }
+        }
+    }
+
+    if verbose {
+        eprintln!("{mnemonic} {arg1}, {arg2}, {arg3}");
+    }
+
+    if let Some(insn) = choose_insn(mnemonic, &arg1, &arg2, &arg3) {
+        let beg = ctx.out.data.len();
+        if verbose {
+            eprintln!(
+                "  {op1:?} {op2:?} {op3:?} | {enc:?}",
+                op1 = insn.op1,
+                op2 = insn.op2,
+                op3 = insn.op3,
+                enc = insn.encoding,
+            );
+        }
+        emit_insn(insn, &arg1, &arg2, &arg3, ctx)?;
+        if verbose {
+            eprintln!("  {:02x?}", &ctx.out.data[beg..]);
+        }
+    } else {
+        return error_at(at, "unknown instruction");
+    }
+
+    Ok(())
 }
 
 fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> Result<(), Error> {
@@ -927,40 +939,31 @@ fn match_argument<'a>(
     label: &'a str,
 ) -> Result<Option<Arg<'a>>, Error> {
     if let Some((ident, at)) = match_identifier(cur, input) {
-        // TODO: collapse m* cases
-        if ident == "m8" {
-            skip_whitespace(cur);
-            if !match_char('[', cur) {
-                error_at(cur.off, "expected address after operand size")
-            } else {
-                Ok(Some(Arg::Mem8(expect_address(cur, input)?)))
+        match ident {
+            "m8" | "m16" | "m32" | "m64" => {
+                skip_whitespace(cur);
+                if !match_char('[', cur) {
+                    return error_at(cur.off, "expected address after operand size");
+                } else {
+                    let addr = expect_address(cur, input)?;
+                    let arg = match ident {
+                        "m8" => Arg::Mem8(addr),
+                        "m16" => Arg::Mem16(addr),
+                        "m32" => Arg::Mem32(addr),
+                        "m64" => Arg::Mem64(addr),
+                        _ => unreachable!(),
+                    };
+                    Ok(Some(arg))
+                }
             }
-        } else if ident == "m16" {
-            skip_whitespace(cur);
-            if !match_char('[', cur) {
-                error_at(cur.off, "expected address after operand size")
-            } else {
-                Ok(Some(Arg::Mem16(expect_address(cur, input)?)))
+            _ => {
+                let arg = if let Some(reg) = parse_register(ident) {
+                    reg
+                } else {
+                    Arg::Rel32(parse_label((ident, at), cur, input)?)
+                };
+                Ok(Some(arg))
             }
-        } else if ident == "m32" {
-            skip_whitespace(cur);
-            if !match_char('[', cur) {
-                error_at(cur.off, "expected address after operand size")
-            } else {
-                Ok(Some(Arg::Mem32(expect_address(cur, input)?)))
-            }
-        } else if ident == "m64" {
-            skip_whitespace(cur);
-            if !match_char('[', cur) {
-                error_at(cur.off, "expected address after operand size")
-            } else {
-                Ok(Some(Arg::Mem64(expect_address(cur, input)?)))
-            }
-        } else if let Some(reg) = parse_register(ident) {
-            Ok(Some(reg))
-        } else {
-            let label = parse_label((ident, at), cur, input)?;
-            Ok(Some(Arg::Rel32(label)))
         }
     } else if match_char('.', cur) {
         let at = cur.off - 1;
@@ -1676,9 +1679,11 @@ mod tests {
              data:\n\
                 .x:\n.i8 10\n\
                 .y:\n.i8 20",
-            &[0x48, 0x8d, 0x05, 0x07, 0x00, 0x00, 0x00,
-              0x48, 0x8d, 0x1d, 0x01, 0x00, 0x00, 0x00,
-              0x0a, 0x14]);
+            &[
+                0x48, 0x8d, 0x05, 0x07, 0x00, 0x00, 0x00, 0x48, 0x8d, 0x1d, 0x01, 0x00, 0x00, 0x00,
+                0x0a, 0x14,
+            ],
+        );
 
         // missing label
         r.fail("jmp .done", 4);

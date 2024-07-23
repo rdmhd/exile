@@ -31,7 +31,9 @@ enum Arg<'a> {
     Mem16(Addr<'a>),
     Mem32(Addr<'a>),
     Mem64(Addr<'a>),
-    Rel32((LabelName<'a>, usize)),
+    Rel32(i64, usize),
+    Label((LabelName<'a>, usize)),
+    AnonLabel(usize, usize),
 }
 
 impl Arg<'_> {
@@ -66,7 +68,9 @@ impl Display for Arg<'_> {
             Arg::One => write!(f, "1 (exact)"),
             Arg::Imm8(imm) => write!(f, "{imm} (imm8)"),
             Arg::Imm32(imm) => write!(f, "{imm} (imm32)"),
-            Arg::Rel32((label, _)) => {
+            Arg::Rel32(off, _) => write!(f, "{off} (rel32)"),
+            Arg::AnonLabel(idx, _) => write!(f, "{idx} (anon label)"),
+            Arg::Label((label, _)) => {
                 if label.1.is_empty() {
                     write!(f, "\"{global}\" (rel32)", global = label.0)
                 } else {
@@ -125,6 +129,12 @@ struct Cursor<'a> {
 struct Error {
     msg: &'static str,
     at: usize,
+}
+
+struct AnonPatch {
+    idx: usize,
+    at: usize,
+    off: i64,
 }
 
 struct Patch<'a> {
@@ -369,6 +379,8 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
             rex: 0,
         },
         curr_label: "",
+        anon_labels: Vec::new(),
+        anon_patches: Vec::new(),
     };
 
     loop {
@@ -397,6 +409,12 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
             }
         } else if let Some((ident, at)) = match_identifier(&mut cur, input) {
             if match_char(':', &mut cur) {
+                if verbose {
+                    print_label(ctx.curr_label, &ctx.labels, &ctx.anon_labels);
+                }
+
+                apply_anon_patches(&mut ctx.anon_patches, &ctx.anon_labels, &mut ctx.out)?;
+
                 let label = Label {
                     off: ctx.out.data.len() as i64,
                     locals: HashMap::new(),
@@ -407,14 +425,22 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
                 }
 
                 ctx.curr_label = ident;
-
+                ctx.anon_labels.clear();
                 skip_whitespace(&mut cur);
                 continue;
             } else {
                 skip_whitespace(&mut cur);
-
                 asm_instruction((ident, at), &mut cur, input, &mut ctx, verbose)?;
             }
+        } else if match_char(':', &mut cur) {
+            if ctx.curr_label.is_empty() {
+                return error_at(
+                    cur.off - 1,
+                    "anonymous label must be declared in local scope",
+                );
+            }
+            ctx.anon_labels.push(ctx.out.data.len() as i64);
+            continue;
         }
 
         skip_whitespace(&mut cur);
@@ -438,17 +464,32 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
     }
 
     if verbose {
-        for (name, label) in &ctx.labels {
-            println!("[{off:08x}] {name}", off = label.off);
-            for (name, off) in &label.locals {
-                println!("  [{off:08x}] {name}");
-            }
-        }
+        print_label(ctx.curr_label, &ctx.labels, &ctx.anon_labels);
     }
 
+    apply_anon_patches(&mut ctx.anon_patches, &ctx.anon_labels, &mut ctx.out)?;
     apply_patches(&ctx.labels, &ctx.patches, &mut ctx.out)?;
 
     Ok(())
+}
+
+fn print_label(name: &str, labels: &HashMap<&str, Label>, anon_labels: &[i64]) {
+    if !name.is_empty() {
+        println!("[{name}]");
+    }
+
+    let parent = if let Some(label) = labels.get(name) {
+        for (name, off) in &label.locals {
+            println!("  [{name}] {off}", off = off - label.off);
+        }
+        label.off
+    } else {
+        0
+    };
+
+    for &off in anon_labels {
+        println!("  <anon> +{off}", off = off - parent);
+    }
 }
 
 fn resolve_label(name: &LabelName, labels: &HashMap<&str, Label>) -> Option<i64> {
@@ -482,6 +523,28 @@ fn apply_patches(
             return error_at(patch.at, "missing label");
         }
     }
+
+    Ok(())
+}
+
+fn apply_anon_patches(
+    patches: &mut Vec<AnonPatch>,
+    anon_labels: &[i64],
+    out: &mut Output,
+) -> Result<(), Error> {
+    for patch in patches.iter() {
+        if let Some(off) = anon_labels.get(patch.idx) {
+            let disp = off - patch.off; // TODO: check that it fits within i32
+            unsafe {
+                (out.data.as_mut_ptr().add(patch.off as usize - 4) as *mut i32)
+                    .write_unaligned(disp as i32);
+            };
+        } else {
+            return error_at(patch.at, "missing anonymous label");
+        }
+    }
+
+    patches.clear();
 
     Ok(())
 }
@@ -648,7 +711,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
             Imm32 => matches!(arg, Arg::One | Arg::Imm8(_) | Arg::Imm32(_)),
             M => matches!(arg, Arg::Mem(_)),
             M64 => matches!(arg, Arg::Mem(_) | Arg::Mem64(_)),
-            Rel32 => matches!(arg, Arg::Rel32(_)),
+            Rel32 => matches!(arg, Arg::Rel32(_, _) | Arg::Label(_) | Arg::AnonLabel(_, _)),
         }
     }
 }
@@ -664,13 +727,13 @@ fn asm_instruction<'a>(
     let mut arg2 = Arg::None;
     let mut arg3 = Arg::None;
 
-    if let Some(arg) = match_argument(cur, input, ctx.curr_label)? {
+    if let Some(arg) = match_argument(cur, input, ctx.curr_label, &ctx.anon_labels)? {
         arg1 = arg;
         skip_whitespace(cur);
 
         if match_char(',', cur) {
             skip_whitespace(cur);
-            if let Some(arg) = match_argument(cur, input, ctx.curr_label)? {
+            if let Some(arg) = match_argument(cur, input, ctx.curr_label, &ctx.anon_labels)? {
                 arg2 = arg;
             } else {
                 return error_at(cur.off, "expected operand after ','");
@@ -678,7 +741,7 @@ fn asm_instruction<'a>(
 
             if match_char(',', cur) {
                 skip_whitespace(cur);
-                if let Some(arg) = match_argument(cur, input, ctx.curr_label)? {
+                if let Some(arg) = match_argument(cur, input, ctx.curr_label, &ctx.anon_labels)? {
                     arg3 = arg;
                 } else {
                     return error_at(cur.off, "expected operand after ','");
@@ -937,6 +1000,7 @@ fn match_argument<'a>(
     cur: &mut Cursor,
     input: &'a str,
     label: &'a str,
+    anon_labels: &[i64],
 ) -> Result<Option<Arg<'a>>, Error> {
     if let Some((ident, at)) = match_identifier(cur, input) {
         match ident {
@@ -960,7 +1024,7 @@ fn match_argument<'a>(
                 let arg = if let Some(reg) = parse_register(ident) {
                     reg
                 } else {
-                    Arg::Rel32(parse_label((ident, at), cur, input)?)
+                    Arg::Label(parse_label((ident, at), cur, input)?)
                 };
                 Ok(Some(arg))
             }
@@ -968,7 +1032,7 @@ fn match_argument<'a>(
     } else if match_char('.', cur) {
         let at = cur.off - 1;
         if let Some((ident, _)) = match_identifier(cur, input) {
-            Ok(Some(Arg::Rel32(((label, ident), at))))
+            Ok(Some(Arg::Label(((label, ident), at))))
         } else {
             error_at(cur.off, "expected label name")
         }
@@ -1002,6 +1066,29 @@ fn match_argument<'a>(
         }
     } else if match_char('[', cur) {
         Ok(Some(Arg::Mem(expect_address(cur, input)?)))
+    } else if match_char('<', cur) {
+        let at = cur.off - 1;
+        let mut delta = 1;
+
+        while match_char('<', cur) {
+            delta += 1;
+        }
+
+        if delta <= anon_labels.len() {
+            let off = unsafe { *anon_labels.get_unchecked(anon_labels.len() - delta) };
+            Ok(Some(Arg::Rel32(off, at)))
+        } else {
+            error_at(at, "trying to jump to a non-existent anonymous label")
+        }
+    } else if match_char('>', cur) {
+        let at = cur.off - 1;
+        let mut delta = 0;
+
+        while match_char('>', cur) {
+            delta += 1;
+        }
+
+        Ok(Some(Arg::AnonLabel(anon_labels.len() + delta, at)))
     } else {
         Ok(None)
     }
@@ -1119,6 +1206,8 @@ struct Context<'a> {
     labels: HashMap<&'a str, Label<'a>>,
     out: Output<'a>,
     curr_label: &'a str,
+    anon_labels: Vec<i64>,
+    anon_patches: Vec<AnonPatch>,
 }
 
 struct Output<'a> {
@@ -1183,12 +1272,23 @@ fn emit_insn<'a>(
             write_imm(arg2.imm(), insn.op2, &mut ctx.out);
         }
         Enc::M1 => emit_modrm(insn.reg as u32, arg1, ctx)?,
-        Enc::D => {
-            let Arg::Rel32((label, at)) = *arg1 else {
-                panic!()
-            };
-            emit_rel32((label, at), 0, ctx)?;
-        }
+        Enc::D => match *arg1 {
+            Arg::Label((label, at)) => emit_rel32_from_label((label, at), 0, ctx)?,
+            Arg::Rel32(off, at) => emit_rel32(off, at, &mut ctx.out)?,
+            Arg::AnonLabel(idx, at) => {
+                if let Some(&off) = ctx.anon_labels.get(idx) {
+                    emit_rel32(off, at, &mut ctx.out)?;
+                } else {
+                    ctx.out.len += 4; // make space for the immediate value
+                    ctx.anon_patches.push(AnonPatch {
+                        idx,
+                        at,
+                        off: ctx.out.pos(),
+                    });
+                }
+            }
+            _ => unreachable!(),
+        },
         Enc::M => emit_modrm(insn.reg as u32, arg1, ctx)?,
         Enc::I2 => write_imm(arg2.imm(), insn.op2, &mut ctx.out),
         Enc::RMI => {
@@ -1206,18 +1306,23 @@ fn emit_insn<'a>(
     Ok(())
 }
 
-fn emit_rel32<'a>(
+fn emit_rel32(off: i64, at: usize, out: &mut Output) -> Result<(), Error> {
+    let rel = out.pos() + 4 - off;
+    if rel <= i32::max_value() as i64 {
+        write32((-rel) as u32, out);
+        Ok(())
+    } else {
+        error_at(at, "distance to target is too large")
+    }
+}
+
+fn emit_rel32_from_label<'a>(
     (label, at): (LabelName<'a>, usize),
     disp: i64,
     ctx: &mut Context<'a>,
 ) -> Result<(), Error> {
     if let Some(off) = resolve_label(&label, &ctx.labels) {
-        let rel = ctx.out.pos() + 4 - off;
-        if rel <= i32::max_value() as i64 {
-            write32((-rel) as u32, &mut ctx.out);
-        } else {
-            return error_at(at, "distance to target is too large");
-        }
+        emit_rel32(off, at, &mut ctx.out)?;
     } else {
         ctx.out.len += 4; // make space for the immediate value
         ctx.patches.push(Patch {
@@ -1287,7 +1392,7 @@ fn emit_modrm<'a>(mut reg: u32, rm: &Arg<'a>, ctx: &mut Context<'a>) -> Result<(
                 assert!(addr.index.is_none());
 
                 write_modrm(0b00, reg, 0b101, out);
-                emit_rel32((label, at), addr.disp, ctx)?;
+                emit_rel32_from_label((label, at), addr.disp, ctx)?;
             } else {
                 assert!(addr.label.is_none()); // TODO: this should be caught by the parser
 
@@ -1700,6 +1805,37 @@ mod tests {
 
         // '.done' and 'done' are different labels
         r.fail("done:\njmp .done", 10);
+
+        assert!(!r.failed);
+    }
+
+    #[test]
+    fn test_anonymous_labels() {
+        let mut r = Runner::new();
+
+        r.pass(
+            "proc:\n\
+               jmp >\n\
+               xor ebx, ebx\n\
+             : cmp ebx, 5\n\
+               je >>\n\
+               mov eax, 10\n\
+             : dec eax\n\
+               jnz <\n\
+               jmp <<\n\
+             : ret",
+            &[
+                0xe9, 0x02, 0x00, 0x00, 0x00, 0x31, 0xdb, 0x83, 0xfb, 0x05, 0x0f, 0x84, 0x12, 0x00,
+                0x00, 0x00, 0xb8, 0x0a, 0x00, 0x00, 0x00, 0xff, 0xc8, 0x0f, 0x85, 0xf8, 0xff, 0xff,
+                0xff, 0xe9, 0xe5, 0xff, 0xff, 0xff, 0xc3,
+            ],
+        );
+
+        r.fail("proc:\njmp >", 10);
+        r.fail("proc:\njmp >>\n:", 10);
+        r.fail("proc:\njmp <", 10);
+        r.fail("proc:\n: jmp <<\n", 12);
+        r.fail(": proc:", 0);
 
         assert!(!r.failed);
     }

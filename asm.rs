@@ -487,7 +487,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
         }
     }
 
-    if cur.iter.as_str().len() != 0 {
+    if cur.char != '\0' || cur.iter.as_str().len() != 0 {
         return error_at(cur.off, "invalid input");
     }
 
@@ -740,11 +740,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
             }
             Imm8 => {
                 if let &Arg::Imm(imm) = arg {
-                    if imm.is_positive() {
-                        imm <= u8::max_value() as i64
-                    } else {
-                        imm >= i8::min_value() as i64 && imm <= i8::max_value() as i64
-                    }
+                    is_valid8(imm)
                 } else {
                     false
                 }
@@ -758,11 +754,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
             }
             Imm32 => {
                 if let &Arg::Imm(imm) = arg {
-                    if imm.is_positive() {
-                        imm <= u32::max_value() as i64
-                    } else {
-                        imm >= i32::min_value() as i64 && imm <= i32::max_value() as i64
-                    }
+                    is_valid32(imm)
                 } else {
                     false
                 }
@@ -864,6 +856,30 @@ fn asm_instruction<'a>(
     Ok(())
 }
 
+fn is_valid8(val: i64) -> bool {
+    if val > 0 {
+        val <= u8::max_value() as i64
+    } else {
+        val >= i8::min_value() as i64
+    }
+}
+
+fn is_valid16(val: i64) -> bool {
+    if val > 0 {
+        val <= u16::max_value() as i64
+    } else {
+        val >= i16::min_value() as i64
+    }
+}
+
+fn is_valid32(val: i64) -> bool {
+    if val > 0 {
+        val <= u32::max_value() as i64
+    } else {
+        val >= i32::min_value() as i64
+    }
+}
+
 fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> Result<(), Error> {
     match name {
         "i8" => {
@@ -882,13 +898,19 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
                             advance(cur);
                         }
                     }
-                } else if let Some((int, _)) = match_integer(cur)? {
-                    // TODO: check that int fits into a byte
-                    out.push(int as u8);
-                    skip_whitespace(cur);
-                    while let Some((int, _)) = match_integer(cur)? {
-                        out.push(int as u8);
+                } else if let Some(mut int) = match_expression(cur)? {
+                    loop {
+                        if is_valid8(int) {
+                            out.push(int as u8);
+                        } else {
+                            return error_at(cur.off, "value doesn't fit in 16 bits");
+                        }
                         skip_whitespace(cur);
+                        if let Some(x) = match_expression(cur)? {
+                            int = x;
+                        } else {
+                            break;
+                        }
                     }
                 } else {
                     return error_at(cur.off, "expected integer literal or string");
@@ -901,48 +923,43 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
                 }
             }
         }
-        "i16" => {
-            if let Some((int, _)) = match_integer(cur)? {
-                // TODO: check that int fits into a word
-                emit16(int as u16, out);
-                skip_whitespace(cur);
-                while let Some((int, _)) = match_integer(cur)? {
-                    emit16(int as u16, out);
+        "i16" | "i32" | "i64" => {
+            if let Some(mut int) = match_expression(cur)? {
+                loop {
+                    match name {
+                        "i16" => {
+                            if is_valid16(int) {
+                                emit16(int as u16, out)
+                            } else {
+                                return error_at(cur.off, "value doesn't fit in 16 bits");
+                            }
+                        }
+                        "i32" => {
+                            if is_valid32(int) {
+                                emit32(int as u32, out)
+                            } else {
+                                return error_at(cur.off, "value doesn't fit in 32 bits");
+                            }
+                        }
+                        "i64" => {
+                            // should be valid as long as the value was checked for overflow
+                            emit64(int as u64, out)
+                        }
+                        _ => unreachable!(),
+                    }
                     skip_whitespace(cur);
+                    if let Some(x) = match_expression(cur)? {
+                        int = x;
+                    } else {
+                        break;
+                    }
                 }
             } else {
-                return error_at(cur.off, "expected integer literal");
-            }
-        }
-        "i32" => {
-            if let Some((int, _)) = match_integer(cur)? {
-                // TODO: check that int fits into a word
-                emit32s(int as i32, out);
-                skip_whitespace(cur);
-                while let Some((int, _)) = match_integer(cur)? {
-                    emit32s(int as i32, out);
-                    skip_whitespace(cur);
-                }
-            } else {
-                return error_at(cur.off, "expected integer literal");
-            }
-        }
-        "i64" => {
-            if let Some((int, _)) = match_integer(cur)? {
-                // TODO: check that int fits into a word
-                emit64(int as u64, out);
-                skip_whitespace(cur);
-                while let Some((int, _)) = match_integer(cur)? {
-                    emit64(int as u64, out);
-                    skip_whitespace(cur);
-                }
-            } else {
-                return error_at(cur.off, "expected integer literal");
+                return error_at(cur.off, "expected expression");
             }
         }
         "res" => {
-            if let Some((int, _)) = match_integer(cur)? {
-                // TODO: check that int fits into a word
+            if let Some(int) = match_expression(cur)? {
                 let len = out.len() + int as usize;
                 out.resize(len, 0);
             } else {
@@ -962,7 +979,8 @@ fn advance(cur: &mut Cursor) {
     (cur.off, cur.char) = cur.iter.next().unwrap_or((cur.iter.offset(), '\0'))
 }
 
-fn peek(cur: &mut Cursor) -> char {
+// TODO: remove if unused
+fn _peek(cur: &mut Cursor) -> char {
     cur.iter.clone().next().unwrap_or((0, '\0')).1
 }
 
@@ -1006,21 +1024,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize)>, Error> {
 
     // TODO: handle overflows
 
-    if cur.char == '-' {
-        let next = peek(cur);
-        if next >= '0' && next <= '9' {
-            advance(cur);
-            advance(cur);
-            let mut int = next as u64 - '0' as u64;
-            while cur.char >= '0' && cur.char <= '9' {
-                int = int * 10 + (cur.char as u64 - '0' as u64);
-                advance(cur);
-            }
-            Ok(Some((-(int as i64), at)))
-        } else {
-            Ok(None)
-        }
-    } else if cur.char == '0' {
+    if cur.char == '0' {
         advance(cur);
 
         if cur.char == 'x' {
@@ -1084,6 +1088,84 @@ fn parse_label<'a>(
     }
 }
 
+fn match_primary(cur: &mut Cursor) -> Result<Option<i64>, Error> {
+    if let Some((int, _)) = match_integer(cur)? {
+        return Ok(Some(int));
+    } else if match_char('-', cur) {
+        if let Some(int) = match_primary(cur)? {
+            return Ok(Some(-int));
+        }
+    } else if match_char('(', cur) {
+        if let Some(int) = match_expression(cur)? {
+            if match_char(')', cur) {
+                return Ok(Some(int));
+            }
+        }
+    } else {
+        return Ok(None);
+    }
+
+    error_at(cur.off, "unexpected end of expression")
+}
+
+fn match_operator(char: char) -> Option<i32> {
+    match char {
+        '+' => Some(0),
+        '-' => Some(0),
+        '*' => Some(1),
+        '/' => Some(1),
+        _ => None,
+    }
+}
+
+fn parse_expression(lhs: i64, op: char, prec: i32, cur: &mut Cursor) -> Result<i64, Error> {
+    let mut rhs = if let Some(int) = match_primary(cur)? {
+        int
+    } else {
+        return error_at(cur.off, "unexpected end of expression");
+    };
+
+    skip_whitespace(cur);
+
+    if let Some(prec2) = match_operator(cur.char) {
+        if prec2 > prec {
+            let op = cur.char;
+            advance(cur);
+            skip_whitespace(cur);
+            rhs = parse_expression(rhs, op, prec2, cur)?;
+        }
+    }
+
+    let res = match op {
+        '+' => lhs + rhs,
+        '-' => lhs - rhs,
+        '*' => lhs * rhs,
+        '/' => lhs / rhs,
+        _ => unreachable!(),
+    };
+
+    Ok(res)
+}
+
+fn match_expression(cur: &mut Cursor) -> Result<Option<i64>, Error> {
+    let mut lhs = if let Some(int) = match_primary(cur)? {
+        int
+    } else {
+        return Ok(None);
+    };
+
+    skip_whitespace(cur);
+
+    while let Some(prec) = match_operator(cur.char) {
+        let op = cur.char;
+        advance(cur);
+        skip_whitespace(cur);
+        lhs = parse_expression(lhs, op, prec, cur)?;
+    }
+
+    Ok(Some(lhs))
+}
+
 fn match_argument<'a>(
     cur: &mut Cursor,
     input: &'a str,
@@ -1128,7 +1210,7 @@ fn match_argument<'a>(
         } else {
             error_at(cur.off, "expected label name")
         }
-    } else if let Some((imm, _)) = match_integer(cur)? {
+    } else if let Some(imm) = match_expression(cur)? {
         Ok(Some(Arg::Imm(imm)))
     } else if match_char('[', cur) {
         Ok(Some(Arg::Mem(expect_address(cur, input)?)))
@@ -1398,7 +1480,7 @@ fn emit16(val: u16, out: &mut Vec<u8>) {
     out.extend(val);
 }
 
-fn emit32s(val: i32, out: &mut Vec<u8>) {
+fn emit32(val: u32, out: &mut Vec<u8>) {
     let val: [u8; 4] = unsafe { transmute(val) };
     out.extend(val);
 }
@@ -1760,7 +1842,10 @@ mod tests {
         r.pass("add eax, 2147483648", &[0x81, 0xc0, 0x00, 0x00, 0x00, 0x80]);
         r.fail("add eax, -2147483649", 0);
 
-        r.pass("add eax, 0xff", &[0x81, 0b11_000_000, 0xff, 0x00, 0x00, 0x00]);
+        r.pass(
+            "add eax, 0xff",
+            &[0x81, 0b11_000_000, 0xff, 0x00, 0x00, 0x00],
+        );
         r.pass(
             "add eax, 0x0100",
             &[0x81, 0b11_000_000, 0x00, 0x01, 0x00, 0x00],
@@ -1873,6 +1958,43 @@ mod tests {
         r.fail("proc:\njmp <", 10);
         r.fail("proc:\n: jmp <<\n", 12);
         r.fail(": proc:", 0);
+
+        assert!(!r.failed);
+    }
+
+    #[test]
+    fn test_expressions() {
+        let mut r = Runner::new();
+
+        r.pass("mov eax, 123", &[0xb8, 0x7b, 0x00, 0x00, 0x00]);
+        r.pass("mov eax, -100", &[0xb8, 0x9c, 0xff, 0xff, 0xff]);
+        r.pass("mov eax, --100", &[0xb8, 0x64, 0x00, 0x00, 0x00]);
+        r.pass("mov eax, ---100", &[0xb8, 0x9c, 0xff, 0xff, 0xff]);
+        r.fail("mov eax, -", 10);
+
+        r.pass("mov eax, 12 + 34", &[0xb8, 0x2e, 0x00, 0x00, 0x00]);
+        r.fail("mov eax, 12 +", 13);
+        r.pass("mov eax, 12 - 34", &[0xb8, 0xea, 0xff, 0xff, 0xff]);
+        r.fail("mov eax, 12 -", 13);
+        r.pass("mov eax, 12 + -34", &[0xb8, 0xea, 0xff, 0xff, 0xff]);
+        r.pass("mov eax, 12 - -34", &[0xb8, 0x2e, 0x00, 0x00, 0x00]);
+
+        r.pass("mov eax, 2 * 3 + 4", &[0xb8, 0x0a, 0x00, 0x00, 0x00]);
+        r.pass("mov eax, 2 + 3 * 4", &[0xb8, 0x0e, 0x00, 0x00, 0x00]);
+        r.pass("mov eax, 2 + 3 * 4 - 6", &[0xb8, 0x08, 0x00, 0x00, 0x00]);
+
+        r.pass("mov eax, 2 * (3 + 4)", &[0xb8, 0x0e, 0x00, 0x00, 0x00]);
+        r.pass("mov eax, (2 + 3) * 4", &[0xb8, 0x14, 0x00, 0x00, 0x00]);
+        r.pass("mov eax, -(2 + 3)", &[0xb8, 0xfb, 0xff, 0xff, 0xff]);
+        r.pass("mov eax, --(2 + 3)", &[0xb8, 0x05, 0x00, 0x00, 0x00]);
+
+        r.fail("mov eax, (2 + 3 * 4", 19);
+        r.fail("mov eax, 2 + 3 * 4)", 18);
+
+        r.pass(
+            "mov eax, (2 + 3) * -4 / -(5 - 6)",
+            &[0xb8, 0xec, 0xff, 0xff, 0xff],
+        );
 
         assert!(!r.failed);
     }

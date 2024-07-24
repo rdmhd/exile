@@ -231,7 +231,7 @@ refresh_screen:
   mov eax, 1
   mov edi, r12d
   lea rsi, [put_image]
-  mov edx, 691228
+  mov edx, (7 + 480 * 360) * 4
   syscall
   jmp main_loop
 
@@ -301,8 +301,8 @@ draw_char:
   movzx eax, m8 [char_x]
   movzx ebx, m8 [char_y]
   lea rcx, [screen]
-  imul eax, eax, 96
-  imul ebx, ebx, 46080
+  imul eax, eax, 24 * 4
+  imul ebx, ebx, 24 * 4 * 480
   add rcx, rax
   add rcx, rbx
 
@@ -326,7 +326,7 @@ draw_char:
 : inc r9d
   cmp r9d, 12
   jne >
-  add rcx, 3744
+  add rcx, (480 * 2 - 24) * 4
   xor r9d, r9d
 : add rcx, 8
   shr eax, 2
@@ -345,8 +345,8 @@ draw_tile:
   push r8
   lea rsi, [sprites]
   lea rdi, [screen]
-  imul ebx, ebx, 96
-  imul ecx, ecx, 46080
+  imul ebx, ebx, 24 * 4
+  imul ecx, ecx, 24 * 4 * 480
   imul eax, eax, 18
   add rdi, rbx
   add rdi, rcx
@@ -366,7 +366,7 @@ draw_tile:
   add rdi, 8
   dec edx
   jnz >
-  add rdi, 3744 ; move down 2 lines in the screen buffer
+  add rdi, (480 * 2 - 24) * 4 ; move down 2 lines in the screen buffer
   mov edx, 12
 : shr eax, 1
   dec ebx
@@ -825,18 +825,18 @@ conn_request:
 .cookie: .res 16
 
 create_window:
-  .i8 1                ; opcode
-  .i8 0                ; depth
-  .i16 9               ; length
+  .i8 1            ; opcode
+  .i8 0            ; depth
+  .i16 9           ; length
 .id:
-  .i32 0               ; window id
+  .i32 0           ; window id
 .parent:
-  .i32 0               ; parent id
+  .i32 0           ; parent id
   .i16 0 0 480 360 ; x, y, width, height
-  .i16 0 1             ; border, class
-  .i32 0               ; visual
-  .i32 0x00000800      ; event-mask
-  .i32 0x00008001      ; keypress + exposure
+  .i16 0 1         ; border, class
+  .i32 0           ; visual
+  .i32 0x00000800  ; event-mask
+  .i32 0x00008001  ; keypress + exposure
 
 map_window:
   .i8 8 0 2 0
@@ -932,15 +932,15 @@ tilemap:
   .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 
 put_image:
-  .i8 72           ; opcode
-  .i8 2            ; format (ZPixmap)
-  .i16 0           ; length (0 to allow big request)
-  .i32 172807      ; actual length
+  .i8 72             ; opcode
+  .i8 2              ; format (ZPixmap)
+  .i16 0             ; length (0 to allow big request)
+  .i32 7 + 480 * 360 ; actual length
 .window:
-  .i32 0           ; window id
+  .i32 0             ; window id
 .gc:
-  .i32 0           ; gc id
-  .i16 480 360 0 0 ; width, height,x, y
-  .i8 0 24 0 0     ; left-pad, depth
+  .i32 0             ; gc id
+  .i16 480 360 0 0   ; width, height,x, y
+  .i8 0 24 0 0       ; left-pad, depth
 screen:
-  .res 691200
+  .res 480 * 360 * 4

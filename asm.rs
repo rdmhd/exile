@@ -42,7 +42,7 @@ impl Arg<'_> {
             Arg::Imm8(imm) => *imm,
             Arg::Imm32(imm) => *imm,
             Arg::One => 1,
-            _ => panic!("unhandled imm <{self}>"),
+            _ => unreachable!(),
         }
     }
     fn reg(&self) -> u32 {
@@ -51,7 +51,7 @@ impl Arg<'_> {
             Arg::Reg8(reg) => *reg,
             Arg::Reg32(reg) => *reg,
             Arg::Reg64(reg) => *reg,
-            _ => panic!(),
+            _ => unreachable!(),
         }
     }
 }
@@ -61,62 +61,98 @@ impl Display for Arg<'_> {
         match self {
             Arg::None => write!(f, "<none>"),
             Arg::Eax => write!(f, "eax"),
-            Arg::Reg8(reg) => write!(f, "{}", REGS8[*reg as usize]),
+            Arg::Reg8(reg) => write!(f, "{} (r8)", REGS8[*reg as usize]),
             Arg::_Reg16(_reg) => todo!(),
-            Arg::Reg32(reg) => write!(f, "{}", REGS32[*reg as usize]),
-            Arg::Reg64(reg) => write!(f, "{}", REGS64[*reg as usize]),
+            Arg::Reg32(reg) => write!(f, "{} (r32)", REGS32[*reg as usize]),
+            Arg::Reg64(reg) => write!(f, "{} (r64)", REGS64[*reg as usize]),
             Arg::One => write!(f, "1 (exact)"),
             Arg::Imm8(imm) => write!(f, "{imm} (imm8)"),
             Arg::Imm32(imm) => write!(f, "{imm} (imm32)"),
             Arg::Rel32(off, _) => write!(f, "{off} (rel32)"),
             Arg::AnonLabel(idx, _) => write!(f, "{idx} (anon label)"),
-            Arg::Label((label, _)) => {
-                if label.1.is_empty() {
-                    write!(f, "\"{global}\" (rel32)", global = label.0)
-                } else {
-                    write!(
-                        f,
-                        "\"{global}.{local}\" (rel32)",
-                        global = label.0,
-                        local = label.1
-                    )
-                }
-            }
+            Arg::Label((label, _)) => write!(f, "{} (rel32)", label),
             Arg::Mem(addr)
             | Arg::Mem8(addr)
             | Arg::Mem16(addr)
             | Arg::Mem32(addr)
-            | Arg::Mem64(addr) => write!(
-                f,
-                "{size} [{base} + {index}*{scale} + {disp} + {label}]",
-                size = match self {
+            | Arg::Mem64(addr) => {
+                let mut s = String::new();
+
+                s.push_str(match self {
                     Arg::Mem8(_) => "m8",
                     Arg::Mem16(_) => "m16",
                     Arg::Mem32(_) => "m32",
                     Arg::Mem64(_) => "m64",
                     Arg::Mem(_) => "m",
-                    _ => panic!(),
-                },
-                base = if let Some(base) = addr.base {
-                    REGS64[base as usize]
-                } else {
-                    "_"
-                },
-                index = if let Some(index) = addr.index {
-                    REGS64[index as usize]
-                } else {
-                    "_"
-                },
-                scale = addr.scale,
-                disp = addr.disp,
-                label = if let Some((label, _)) = addr.label {
-                    format!("{}.{}", label.0, label.1)
-                } else {
-                    "".to_owned()
+                    _ => unreachable!(),
+                });
+
+                if let Some(base) = addr.base {
+                    s.push_str(&format!(" base={}", REGS64[base as usize]));
                 }
-            ),
+
+                if let Some(index) = addr.index {
+                    s.push_str(&format!(" index={}", REGS64[index as usize]));
+                    if addr.scale > 1 {
+                        s.push_str(&format!(" scale={}", addr.scale));
+                    }
+                }
+
+                if addr.disp != 0 {
+                    s.push_str(&format!(" disp={}", addr.disp));
+                }
+
+                if let Some((label, _)) = addr.label {
+                    s.push_str(&format!(" label={label}"));
+                }
+
+                write!(f, "{}", s)
+            }
         }
     }
+}
+
+struct Context<'a> {
+    patches: Vec<Patch<'a>>,
+    labels: HashMap<&'a str, Label<'a>>,
+    out: Output<'a>,
+    curr_label: &'a str,
+    anon_labels: Vec<i64>,
+    anon_patches: Vec<AnonPatch>,
+}
+
+struct Output<'a> {
+    data: &'a mut Vec<u8>,
+    buf: [u8; 16],
+    len: usize,
+    rex: u32,
+}
+
+impl Output<'_> {
+    fn pos(&self) -> i64 {
+        (self.data.len() + self.len + if self.rex != 0 { 1 } else { 0 }) as i64
+    }
+}
+
+#[derive(Clone, Copy)]
+struct LabelName<'a> {
+    global: &'a str,
+    local: &'a str,
+}
+
+impl Display for LabelName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.local.is_empty() {
+            write!(f, "{}", self.global)
+        } else {
+            write!(f, "{}.{}", self.global, self.local)
+        }
+    }
+}
+
+struct Label<'a> {
+    off: i64,
+    locals: HashMap<&'a str, i64>,
 }
 
 struct Cursor<'a> {
@@ -409,10 +445,6 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
             }
         } else if let Some((ident, at)) = match_identifier(&mut cur, input) {
             if match_char(':', &mut cur) {
-                if verbose {
-                    print_label(ctx.curr_label, &ctx.labels, &ctx.anon_labels);
-                }
-
                 apply_anon_patches(&mut ctx.anon_patches, &ctx.anon_labels, &mut ctx.out)?;
 
                 let label = Label {
@@ -463,16 +495,13 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
         return error_at(cur.off, "invalid input");
     }
 
-    if verbose {
-        print_label(ctx.curr_label, &ctx.labels, &ctx.anon_labels);
-    }
-
     apply_anon_patches(&mut ctx.anon_patches, &ctx.anon_labels, &mut ctx.out)?;
     apply_patches(&ctx.labels, &ctx.patches, &mut ctx.out)?;
 
     Ok(())
 }
 
+#[allow(dead_code)]
 fn print_label(name: &str, labels: &HashMap<&str, Label>, anon_labels: &[i64]) {
     if !name.is_empty() {
         println!("[{name}]");
@@ -493,10 +522,10 @@ fn print_label(name: &str, labels: &HashMap<&str, Label>, anon_labels: &[i64]) {
 }
 
 fn resolve_label(name: &LabelName, labels: &HashMap<&str, Label>) -> Option<i64> {
-    if let Some(label) = labels.get(name.0) {
-        if name.1.is_empty() {
+    if let Some(label) = labels.get(name.global) {
+        if name.local.is_empty() {
             return Some(label.off);
-        } else if let Some(&off) = label.locals.get(name.1) {
+        } else if let Some(&off) = label.locals.get(name.local) {
             return Some(off);
         }
     }
@@ -750,24 +779,47 @@ fn asm_instruction<'a>(
         }
     }
 
-    if verbose {
-        eprintln!("{mnemonic} {arg1}, {arg2}, {arg3}");
-    }
-
     if let Some(insn) = choose_insn(mnemonic, &arg1, &arg2, &arg3) {
-        let beg = ctx.out.data.len();
-        if verbose {
-            eprintln!(
-                "  {op1:?} {op2:?} {op3:?} | {enc:?}",
-                op1 = insn.op1,
-                op2 = insn.op2,
-                op3 = insn.op3,
-                enc = insn.encoding,
-            );
-        }
+        let off = ctx.out.data.len();
+
         emit_insn(insn, &arg1, &arg2, &arg3, ctx)?;
+
         if verbose {
-            eprintln!("  {:02x?}", &ctx.out.data[beg..]);
+            let mut s = String::new();
+
+            s.push_str(&format!("{off:08x} ", off = off - 120));
+
+            for &byte in &ctx.out.data[off..] {
+                s.push_str(&format!("{byte:02x} "));
+            }
+
+            let mut col = 45;
+            if s.len() < col {
+                for _ in 0..col - s.len() {
+                    s.push(' ');
+                }
+            }
+
+            s.push_str(&format!("{mnemonic}"));
+
+            col += 16;
+            if s.len() < col {
+                for _ in 0..col - s.len() {
+                    s.push(' ');
+                }
+            }
+
+            for (idx, arg) in [arg1, arg2, arg3].iter().enumerate() {
+                if let Arg::None = arg {
+                    break;
+                }
+                if idx > 0 && idx <= 2 {
+                    s.push_str(", ");
+                }
+                s.push_str(&format!("{arg}"));
+            }
+
+            println!("{}", s);
         }
     } else {
         return error_at(at, "unknown instruction");
@@ -987,12 +1039,12 @@ fn parse_label<'a>(
 ) -> Result<(LabelName<'a>, usize), Error> {
     if match_char('.', cur) {
         if let Some((local, _)) = match_identifier(cur, input) {
-            Ok(((global, local), at))
+            Ok((LabelName { global, local }, at))
         } else {
             return error_at(cur.off, "expected local label name");
         }
     } else {
-        Ok(((global, ""), at))
+        Ok((LabelName { global, local: "" }, at))
     }
 }
 
@@ -1032,7 +1084,11 @@ fn match_argument<'a>(
     } else if match_char('.', cur) {
         let at = cur.off - 1;
         if let Some((ident, _)) = match_identifier(cur, input) {
-            Ok(Some(Arg::Label(((label, ident), at))))
+            let label = LabelName {
+                global: label,
+                local: ident,
+            };
+            Ok(Some(Arg::Label((label, at))))
         } else {
             error_at(cur.off, "expected label name")
         }
@@ -1199,35 +1255,6 @@ fn parse_register(name: &str) -> Option<Arg> {
     } else {
         None
     }
-}
-
-struct Context<'a> {
-    patches: Vec<Patch<'a>>,
-    labels: HashMap<&'a str, Label<'a>>,
-    out: Output<'a>,
-    curr_label: &'a str,
-    anon_labels: Vec<i64>,
-    anon_patches: Vec<AnonPatch>,
-}
-
-struct Output<'a> {
-    data: &'a mut Vec<u8>,
-    buf: [u8; 16],
-    len: usize,
-    rex: u32,
-}
-
-impl Output<'_> {
-    fn pos(&self) -> i64 {
-        (self.data.len() + self.len + if self.rex != 0 { 1 } else { 0 }) as i64
-    }
-}
-
-type LabelName<'a> = (&'a str, &'a str);
-
-struct Label<'a> {
-    off: i64,
-    locals: HashMap<&'a str, i64>,
 }
 
 fn emit_insn<'a>(

@@ -23,9 +23,7 @@ enum Arg<'a> {
     _Reg16(u32),
     Reg32(u32),
     Reg64(u32),
-    One, // immediate 1
-    Imm8(i64),
-    Imm32(i64),
+    Imm(i64),
     Mem(Addr<'a>),
     Mem8(Addr<'a>),
     Mem16(Addr<'a>),
@@ -39,9 +37,7 @@ enum Arg<'a> {
 impl Arg<'_> {
     fn imm(&self) -> i64 {
         match self {
-            Arg::Imm8(imm) => *imm,
-            Arg::Imm32(imm) => *imm,
-            Arg::One => 1,
+            Arg::Imm(imm) => *imm,
             _ => unreachable!(),
         }
     }
@@ -65,9 +61,7 @@ impl Display for Arg<'_> {
             Arg::_Reg16(_reg) => todo!(),
             Arg::Reg32(reg) => write!(f, "{} (r32)", REGS32[*reg as usize]),
             Arg::Reg64(reg) => write!(f, "{} (r64)", REGS64[*reg as usize]),
-            Arg::One => write!(f, "1 (exact)"),
-            Arg::Imm8(imm) => write!(f, "{imm} (imm8)"),
-            Arg::Imm32(imm) => write!(f, "{imm} (imm32)"),
+            Arg::Imm(imm) => write!(f, "{imm} (imm)"),
             Arg::Rel32(off, _) => write!(f, "{off} (rel32)"),
             Arg::AnonLabel(idx, _) => write!(f, "{idx} (anon label)"),
             Arg::Label((label, _)) => write!(f, "{} (rel32)", label),
@@ -223,7 +217,9 @@ enum Op {
     M64,
     One,
     Imm8,
+    Imm8sx,
     Imm32,
+    Imm32sx,
     Rel32,
 }
 
@@ -585,82 +581,82 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
 
     #[rustfmt::skip]
     static INSNS: [Insn; 76] = [
-        insn("add",     RM32,  R32,   None,  0,     &[0x01],       0, Enc::MR),
-        insn("add",     RM64,  R64,   None,  REX_W, &[0x01],       0, Enc::MR),
-        insn("add",     RM32,  Imm8,  None,  0,     &[0x83],       0, Enc::MI),
-        insn("add",     RM64,  Imm8,  None,  REX_W, &[0x83],       0, Enc::MI),
-        insn("add",     RM32,  Imm32, None,  0,     &[0x81],       0, Enc::MI),
-        insn("add",     RM64,  Imm32, None,  REX_W, &[0x81],       0, Enc::MI),
-        insn("and",     RM32,  Imm8,  None,  0    , &[0x83],       4, Enc::MI),
-        insn("call",    Rel32, None,  None,  0,     &[0xe8],       0, Enc::D),
-        insn("cmove",   R32,   RM32,  None,  0,     &[0x0f, 0x44], 0, Enc::RM),
-        insn("cmovg",   R32,   RM32,  None,  0,     &[0x0f, 0x4f], 0, Enc::RM),
-        insn("cmovg",   R64,   RM64,  None,  REX_W, &[0x0f, 0x4f], 0, Enc::RM),
-        insn("cmovnz",  R32,   RM32,  None,  0,     &[0x0f, 0x45], 0, Enc::RM),
-        insn("cmovz",   R32,   RM32,  None,  0,     &[0x0f, 0x44], 0, Enc::RM),
-        insn("cmp",     RM32,  R32,   None,  0,     &[0x39],       0, Enc::MR),
-        insn("cmp",     RM64,  R64,   None,  REX_W, &[0x39],       0, Enc::MR),
-        insn("cmp",     R8,    RM8,   None,  0,     &[0x3a],       0, Enc::RM),
-        insn("cmp",     RM8,   Imm8,  None,  0,     &[0x80],       7, Enc::MI),
-        insn("cmp",     RM64,  Imm8,  None,  REX_W, &[0x83],       7, Enc::MI),
-        insn("cmp",     R32,   Imm8,  None,  0,     &[0x83],       7, Enc::MI),
-        insn("cmp",     R32,   Imm32, None,  0,     &[0x81],       7, Enc::MI),
-        insn("dec",     RM32,  None,  None,  0,     &[0xff],       1, Enc::M),
-        insn("dec",     RM64,  None,  None,  REX_W, &[0xff],       1, Enc::M),
-        insn("div",     RM32,  None,  None,  0,     &[0xf7],       6, Enc::M),
-        insn("imul",    R32,   RM32,  None,  0,     &[0x0f, 0xaf], 0, Enc::RM),
-        insn("imul",    R32,   RM32,  Imm8,  0,     &[0x6b],       0, Enc::RMI),
-        insn("imul",    R32,   RM32,  Imm32, 0,     &[0x69],       0, Enc::RMI),
-        insn("imul",    R64,   RM64,  Imm32, REX_W, &[0x69],       0, Enc::RMI),
-        insn("inc",     RM32,  None,  None,  0,     &[0xff],       0, Enc::M),
-        insn("inc",     RM64,  None,  None,  REX_W, &[0xff],       0, Enc::M),
-        insn("int3",    None,  None,  None,  0,     &[0xcc],       0, Enc::ZO),
-        insn("ja",      Rel32, None,  None,  0,     &[0x0f, 0x87], 0, Enc::D),
-        insn("jae",     Rel32, None,  None,  0,     &[0x0f, 0x83], 0, Enc::D),
-        insn("je",      Rel32, None,  None,  0,     &[0x0f, 0x84], 0, Enc::D),
-        insn("jg",      Rel32, None,  None,  0,     &[0x0f, 0x8f], 0, Enc::D),
-        insn("jge",     Rel32, None,  None,  0,     &[0x0f, 0x8d], 0, Enc::D),
-        insn("jl",      Rel32, None,  None,  0,     &[0x0f, 0x8c], 0, Enc::D),
-        insn("jle",     Rel32, None,  None,  0,     &[0x0f, 0x8e], 0, Enc::D),
-        insn("jmp",     Rel32, None,  None,  0,     &[0xe9],       0, Enc::D),
-        insn("jne",     Rel32, None,  None,  0,     &[0x0f, 0x85], 0, Enc::D),
-        insn("jnz",     Rel32, None,  None,  0,     &[0x0f, 0x85], 0, Enc::D),
-        insn("jz",      Rel32, None,  None,  0,     &[0x0f, 0x84], 0, Enc::D),
-        insn("lea",     R64,   M,     None,  REX_W, &[0x8d],       0, Enc::RM),
-        insn("mov",     RM8,   R8,    None,  0,     &[0x88],       0, Enc::MR),
-        insn("mov",     RM32,  R32,   None,  0,     &[0x89],       0, Enc::MR),
-        insn("mov",     RM64,  R64,   None,  REX_W, &[0x89],       0, Enc::MR),
-        insn("mov",     R8,    RM8,   None,  0,     &[0x8a],       0, Enc::RM),
-        insn("mov",     R32,   RM32,  None,  0,     &[0x8b],       0, Enc::RM),
-        insn("mov",     R32,   Imm32, None,  0,     &[0xb8],       0, Enc::OI),
-        insn("mov",     R64,   M64,   None,  REX_W, &[0x8b],       0, Enc::RM),
-        insn("mov",     RM8,   Imm8,  None,  0,     &[0xc6],       0, Enc::MI),
-        insn("mov",     RM32,  Imm32, None,  0,     &[0xc7],       0, Enc::MI),
-        insn("mov",     RM64,  Imm32, None,  REX_W, &[0xc7],       0, Enc::MI),
-        insn("movzx",   R32,   RM8,   None,  0,     &[0x0f, 0xb6], 0, Enc::RM),
-        insn("movzx",   R32,   RM16,  None,  0,     &[0x0f, 0xb7], 0, Enc::RM),
-        insn("neg",     RM32,  None,  None,  0,     &[0xf7],       3, Enc::M),
-        insn("or",      RM8,   Imm8,  None,  0,     &[0x80],       1, Enc::MI),
-        insn("or",      RM32,  Imm8,  None,  0,     &[0x83],       1, Enc::MI),
-        insn("or",      RM32,  R32,   None,  0,     &[0x09],       0, Enc::MR),
-        insn("pop",     R64,   None,  None,  0,     &[0x58],       0, Enc::O),
-        insn("push",    R64,   None,  None,  0,     &[0x50],       0, Enc::O),
-        insn("rdrand",  R32,   None,  None,  0,     &[0x0f, 0xc7], 6, Enc::M),
-        insn("ret",     None,  None,  None,  0,     &[0xc3],       0, Enc::ZO),
-        insn("xor",     RM32,  R32,   None,  0,     &[0x31],       0, Enc::MR),
-        insn("setz",    RM8,   None,  None,  0,     &[0x0f, 0x94], 0, Enc::M),
-        insn("shl",     RM32,  Imm8,  None,  0,     &[0xc1],       4, Enc::MI),
-        insn("shr",     RM32,  One,   None,  0,     &[0xd1],       5, Enc::M1),
-        insn("shr",     RM32,  Imm8,  None,  0,     &[0xc1],       5, Enc::MI),
-        insn("sub",     RM32,  R32,   None,  0,     &[0x29],       0, Enc::MR),
-        insn("sub",     RM64,  R64,   None,  REX_W, &[0x29],       0, Enc::MR),
-        insn("sub",     RM64,  Imm32, None,  REX_W, &[0x81],       5, Enc::MI),
-        insn("syscall", None,  None,  None,  0,     &[0x0f, 0x05], 0, Enc::ZO),
-        insn("test",    RM8,   Imm8,  None,  0,     &[0xf6],       0, Enc::MI),
-        insn("test",    RM32,  R32,   None,  0,     &[0x85],       0, Enc::MR),
-        insn("test",    Eax,   Imm32, None,  0,     &[0xa9],       0, Enc::I2),
-        insn("xchg",    RM32,  R32,   None,  0,     &[0x87],       0, Enc::MR),
-        insn("xchg",    RM64,  R64,   None,  REX_W, &[0x87],       0, Enc::MR),
+        insn("add",     RM32,  R32,     None,    0,       &[0x01],       0, Enc::MR),
+        insn("add",     RM64,  R64,     None,    REX_W,   &[0x01],       0, Enc::MR),
+        insn("add",     RM32,  Imm8sx,  None,    0,       &[0x83],       0, Enc::MI),
+        insn("add",     RM64,  Imm8sx,  None,    REX_W,   &[0x83],       0, Enc::MI),
+        insn("add",     RM32,  Imm32,   None,    0,       &[0x81],       0, Enc::MI),
+        insn("add",     RM64,  Imm32sx, None,    REX_W,   &[0x81],       0, Enc::MI),
+        insn("and",     RM32,  Imm8sx,  None,    0,       &[0x83],       4, Enc::MI),
+        insn("call",    Rel32, None,    None,    0,       &[0xe8],       0, Enc::D),
+        insn("cmove",   R32,   RM32,    None,    0,       &[0x0f, 0x44], 0, Enc::RM),
+        insn("cmovg",   R32,   RM32,    None,    0,       &[0x0f, 0x4f], 0, Enc::RM),
+        insn("cmovg",   R64,   RM64,    None,    REX_W,   &[0x0f, 0x4f], 0, Enc::RM),
+        insn("cmovnz",  R32,   RM32,    None,    0,       &[0x0f, 0x45], 0, Enc::RM),
+        insn("cmovz",   R32,   RM32,    None,    0,       &[0x0f, 0x44], 0, Enc::RM),
+        insn("cmp",     RM32,  R32,     None,    0,       &[0x39],       0, Enc::MR),
+        insn("cmp",     RM64,  R64,     None,    REX_W,   &[0x39],       0, Enc::MR),
+        insn("cmp",     R8,    RM8,     None,    0,       &[0x3a],       0, Enc::RM),
+        insn("cmp",     RM8,   Imm8,    None,    0,       &[0x80],       7, Enc::MI),
+        insn("cmp",     RM64,  Imm8sx,  None,    REX_W,   &[0x83],       7, Enc::MI),
+        insn("cmp",     RM32,  Imm8sx,  None,    0,       &[0x83],       7, Enc::MI),
+        insn("cmp",     RM32,  Imm32,   None,    0,       &[0x81],       7, Enc::MI),
+        insn("dec",     RM32,  None,    None,    0,       &[0xff],       1, Enc::M),
+        insn("dec",     RM64,  None,    None,    REX_W,   &[0xff],       1, Enc::M),
+        insn("div",     RM32,  None,    None,    0,       &[0xf7],       6, Enc::M),
+        insn("imul",    R32,   RM32,    None,    0,       &[0x0f, 0xaf], 0, Enc::RM),
+        insn("imul",    R32,   RM32,    Imm8sx,  0,       &[0x6b],       0, Enc::RMI),
+        insn("imul",    R32,   RM32,    Imm32,   0,       &[0x69],       0, Enc::RMI),
+        insn("imul",    R64,   RM64,    Imm32sx, REX_W,   &[0x69],       0, Enc::RMI),
+        insn("inc",     RM32,  None,    None,    0,       &[0xff],       0, Enc::M),
+        insn("inc",     RM64,  None,    None,    REX_W,   &[0xff],       0, Enc::M),
+        insn("int3",    None,  None,    None,    0,       &[0xcc],       0, Enc::ZO),
+        insn("ja",      Rel32, None,    None,    0,       &[0x0f, 0x87], 0, Enc::D),
+        insn("jae",     Rel32, None,    None,    0,       &[0x0f, 0x83], 0, Enc::D),
+        insn("je",      Rel32, None,    None,    0,       &[0x0f, 0x84], 0, Enc::D),
+        insn("jg",      Rel32, None,    None,    0,       &[0x0f, 0x8f], 0, Enc::D),
+        insn("jge",     Rel32, None,    None,    0,       &[0x0f, 0x8d], 0, Enc::D),
+        insn("jl",      Rel32, None,    None,    0,       &[0x0f, 0x8c], 0, Enc::D),
+        insn("jle",     Rel32, None,    None,    0,       &[0x0f, 0x8e], 0, Enc::D),
+        insn("jmp",     Rel32, None,    None,    0,       &[0xe9],       0, Enc::D),
+        insn("jne",     Rel32, None,    None,    0,       &[0x0f, 0x85], 0, Enc::D),
+        insn("jnz",     Rel32, None,    None,    0,       &[0x0f, 0x85], 0, Enc::D),
+        insn("jz",      Rel32, None,    None,    0,       &[0x0f, 0x84], 0, Enc::D),
+        insn("lea",     R64,   M,       None,    REX_W,   &[0x8d],       0, Enc::RM),
+        insn("mov",     RM8,   R8,      None,    0,       &[0x88],       0, Enc::MR),
+        insn("mov",     RM32,  R32,     None,    0,       &[0x89],       0, Enc::MR),
+        insn("mov",     RM64,  R64,     None,    REX_W,   &[0x89],       0, Enc::MR),
+        insn("mov",     R8,    RM8,     None,    0,       &[0x8a],       0, Enc::RM),
+        insn("mov",     R32,   RM32,    None,    0,       &[0x8b],       0, Enc::RM),
+        insn("mov",     R32,   Imm32,   None,    0,       &[0xb8],       0, Enc::OI),
+        insn("mov",     R64,   M64,     None,    REX_W,   &[0x8b],       0, Enc::RM),
+        insn("mov",     RM8,   Imm8,    None,    0,       &[0xc6],       0, Enc::MI),
+        insn("mov",     RM32,  Imm32,   None,    0,       &[0xc7],       0, Enc::MI),
+        insn("mov",     RM64,  Imm32sx, None,    REX_W,   &[0xc7],       0, Enc::MI),
+        insn("movzx",   R32,   RM8,     None,    0,       &[0x0f, 0xb6], 0, Enc::RM),
+        insn("movzx",   R32,   RM16,    None,    0,       &[0x0f, 0xb7], 0, Enc::RM),
+        insn("neg",     RM32,  None,    None,    0,       &[0xf7],       3, Enc::M),
+        insn("or",      RM8,   Imm8,    None,    0,       &[0x80],       1, Enc::MI),
+        insn("or",      RM32,  Imm8sx,  None,    0,       &[0x83],       1, Enc::MI),
+        insn("or",      RM32,  R32,     None,    0,       &[0x09],       0, Enc::MR),
+        insn("pop",     R64,   None,    None,    0,       &[0x58],       0, Enc::O),
+        insn("push",    R64,   None,    None,    0,       &[0x50],       0, Enc::O),
+        insn("rdrand",  R32,   None,    None,    0,       &[0x0f, 0xc7], 6, Enc::M),
+        insn("ret",     None,  None,    None,    0,       &[0xc3],       0, Enc::ZO),
+        insn("xor",     RM32,  R32,     None,    0,       &[0x31],       0, Enc::MR),
+        insn("setz",    RM8,   None,    None,    0,       &[0x0f, 0x94], 0, Enc::M),
+        insn("shl",     RM32,  Imm8,    None,    0,       &[0xc1],       4, Enc::MI),
+        insn("shr",     RM32,  One,     None,    0,       &[0xd1],       5, Enc::M1),
+        insn("shr",     RM32,  Imm8,    None,    0,       &[0xc1],       5, Enc::MI),
+        insn("sub",     RM32,  R32,     None,    0,       &[0x29],       0, Enc::MR),
+        insn("sub",     RM64,  R64,     None,    REX_W,   &[0x29],       0, Enc::MR),
+        insn("sub",     RM64,  Imm32sx, None,    REX_W,   &[0x81],       5, Enc::MI),
+        insn("syscall", None,  None,    None,    0,       &[0x0f, 0x05], 0, Enc::ZO),
+        insn("test",    RM8,   Imm8,    None,    0,       &[0xf6],       0, Enc::MI),
+        insn("test",    RM32,  R32,     None,    0,       &[0x85],       0, Enc::MR),
+        insn("test",    Eax,   Imm32,   None,    0,       &[0xa9],       0, Enc::I2),
+        insn("xchg",    RM32,  R32,     None,    0,       &[0x87],       0, Enc::MR),
+        insn("xchg",    RM64,  R64,     None,    REX_W,   &[0x87],       0, Enc::MR),
     ];
 
     for insn in &INSNS {
@@ -735,9 +731,49 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
                     matches!(arg, Arg::Reg64(_) | Arg::Mem64(_))
                 }
             }
-            One => matches!(arg, Arg::One),
-            Imm8 => matches!(arg, Arg::One | Arg::Imm8(_)),
-            Imm32 => matches!(arg, Arg::One | Arg::Imm8(_) | Arg::Imm32(_)),
+            One => {
+                if let &Arg::Imm(imm) = arg {
+                    imm == 1
+                } else {
+                    false
+                }
+            }
+            Imm8 => {
+                if let &Arg::Imm(imm) = arg {
+                    if imm.is_positive() {
+                        imm <= u8::max_value() as i64
+                    } else {
+                        imm >= i8::min_value() as i64 && imm <= i8::max_value() as i64
+                    }
+                } else {
+                    false
+                }
+            }
+            Imm8sx => {
+                if let &Arg::Imm(imm) = arg {
+                    imm >= i8::min_value() as i64 && imm <= i8::max_value() as i64
+                } else {
+                    false
+                }
+            }
+            Imm32 => {
+                if let &Arg::Imm(imm) = arg {
+                    if imm.is_positive() {
+                        imm <= u32::max_value() as i64
+                    } else {
+                        imm >= i32::min_value() as i64 && imm <= i32::max_value() as i64
+                    }
+                } else {
+                    false
+                }
+            }
+            Imm32sx => {
+                if let &Arg::Imm(imm) = arg {
+                    imm >= i32::min_value() as i64 && imm <= i32::max_value() as i64
+                } else {
+                    false
+                }
+            }
             M => matches!(arg, Arg::Mem(_)),
             M64 => matches!(arg, Arg::Mem(_) | Arg::Mem64(_)),
             Rel32 => matches!(arg, Arg::Rel32(_, _) | Arg::Label(_) | Arg::AnonLabel(_, _)),
@@ -846,11 +882,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
                             advance(cur);
                         }
                     }
-                } else if let Some((int, _, _)) = match_integer(cur)? {
+                } else if let Some((int, _)) = match_integer(cur)? {
                     // TODO: check that int fits into a byte
                     out.push(int as u8);
                     skip_whitespace(cur);
-                    while let Some((int, _, _)) = match_integer(cur)? {
+                    while let Some((int, _)) = match_integer(cur)? {
                         out.push(int as u8);
                         skip_whitespace(cur);
                     }
@@ -866,11 +902,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "i16" => {
-            if let Some((int, _, _)) = match_integer(cur)? {
+            if let Some((int, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 emit16(int as u16, out);
                 skip_whitespace(cur);
-                while let Some((int, _, _)) = match_integer(cur)? {
+                while let Some((int, _)) = match_integer(cur)? {
                     emit16(int as u16, out);
                     skip_whitespace(cur);
                 }
@@ -879,11 +915,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "i32" => {
-            if let Some((int, _, _)) = match_integer(cur)? {
+            if let Some((int, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 emit32s(int as i32, out);
                 skip_whitespace(cur);
-                while let Some((int, _, _)) = match_integer(cur)? {
+                while let Some((int, _)) = match_integer(cur)? {
                     emit32s(int as i32, out);
                     skip_whitespace(cur);
                 }
@@ -892,11 +928,11 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "i64" => {
-            if let Some((int, _, _)) = match_integer(cur)? {
+            if let Some((int, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 emit64(int as u64, out);
                 skip_whitespace(cur);
-                while let Some((int, _, _)) = match_integer(cur)? {
+                while let Some((int, _)) = match_integer(cur)? {
                     emit64(int as u64, out);
                     skip_whitespace(cur);
                 }
@@ -905,7 +941,7 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "res" => {
-            if let Some((int, _, _)) = match_integer(cur)? {
+            if let Some((int, _)) = match_integer(cur)? {
                 // TODO: check that int fits into a word
                 let len = out.len() + int as usize;
                 out.resize(len, 0);
@@ -965,7 +1001,7 @@ fn match_identifier<'a>(cur: &mut Cursor, input: &'a str) -> Option<(&'a str, us
     }
 }
 
-fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize, bool)>, Error> {
+fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize)>, Error> {
     let at = cur.off;
 
     // TODO: handle overflows
@@ -980,7 +1016,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize, bool)>, Error> 
                 int = int * 10 + (cur.char as u64 - '0' as u64);
                 advance(cur);
             }
-            Ok(Some((-(int as i64), at, false)))
+            Ok(Some((-(int as i64), at)))
         } else {
             Ok(None)
         }
@@ -1007,7 +1043,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize, bool)>, Error> 
                     int = int * 16 + n;
                     advance(cur);
                 }
-                Ok(Some((int as i64, at, true)))
+                Ok(Some((int as i64, at)))
             } else {
                 error_at(cur.off, "expected hexadecimal digit")
             }
@@ -1017,7 +1053,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize, bool)>, Error> 
                 int = int * 10 + (cur.char as u64 - '0' as u64);
                 advance(cur);
             }
-            Ok(Some((int as i64, at, false)))
+            Ok(Some((int as i64, at)))
         }
     } else if cur.char >= '1' && cur.char <= '9' {
         let mut int = cur.char as u64 - '0' as u64;
@@ -1026,7 +1062,7 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize, bool)>, Error> 
             int = int * 10 + (cur.char as u64 - '0' as u64);
             advance(cur);
         }
-        Ok(Some((int as i64, at, false)))
+        Ok(Some((int as i64, at)))
     } else {
         Ok(None)
     }
@@ -1092,34 +1128,8 @@ fn match_argument<'a>(
         } else {
             error_at(cur.off, "expected label name")
         }
-    } else if let Some((imm, at, is_hex)) = match_integer(cur)? {
-        if imm == 1 {
-            Ok(Some(Arg::One))
-        } else {
-            if is_hex {
-                if imm <= u8::max_value() as i64 {
-                    Ok(Some(Arg::Imm8(imm)))
-                } else if imm <= u32::max_value() as i64 {
-                    Ok(Some(Arg::Imm32(imm)))
-                } else {
-                    error_at(
-                        at,
-                        "immediate value is out of range of unsigned 32-bit integer",
-                    )
-                }
-            } else {
-                if imm >= i8::min_value() as i64 && imm <= i8::max_value() as i64 {
-                    Ok(Some(Arg::Imm8(imm)))
-                } else if imm >= i32::min_value() as i64 && imm <= i32::max_value() as i64 {
-                    Ok(Some(Arg::Imm32(imm)))
-                } else {
-                    error_at(
-                        at,
-                        "immediate value is out of range of signed 32-bit integer",
-                    )
-                }
-            }
-        }
+    } else if let Some((imm, _)) = match_integer(cur)? {
+        Ok(Some(Arg::Imm(imm)))
     } else if match_char('[', cur) {
         Ok(Some(Arg::Mem(expect_address(cur, input)?)))
     } else if match_char('<', cur) {
@@ -1173,7 +1183,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
 
                 if match_char('*', cur) {
                     skip_whitespace(cur);
-                    if let Some((int, _, _)) = match_integer(cur)? {
+                    if let Some((int, _)) = match_integer(cur)? {
                         if int != 1 && int != 2 && int != 4 && int != 8 {
                             return error_at(cur.off, "scale must be 1, 2, 4, or 8");
                         }
@@ -1211,7 +1221,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
             } else {
                 label = Some(parse_label((ident, at), cur, input)?);
             }
-        } else if let Some((int, at, _)) = match_integer(cur)? {
+        } else if let Some((int, at)) = match_integer(cur)? {
             if disp_at == 0 {
                 disp_at = at;
             }
@@ -1377,8 +1387,8 @@ fn write32(val: u32, out: &mut Output) {
 
 fn write_imm(imm: i64, op: Op, out: &mut Output) {
     match op {
-        Op::Imm8 => write8(imm as u8, out),
-        Op::Imm32 => write32(imm as u32, out),
+        Op::Imm8 | Op::Imm8sx => write8(imm as u8, out),
+        Op::Imm32 | Op::Imm32sx => write32(imm as u32, out),
         _ => panic!(),
     }
 }
@@ -1747,10 +1757,10 @@ mod tests {
             "add eax, -2147483648",
             &[0x81, 0b11_000_000, 0x00, 0x00, 0x00, 0x80],
         );
-        r.fail("add eax, 2147483648", 9);
-        r.fail("add eax, -2147483649", 9);
+        r.pass("add eax, 2147483648", &[0x81, 0xc0, 0x00, 0x00, 0x00, 0x80]);
+        r.fail("add eax, -2147483649", 0);
 
-        r.pass("add eax, 0xff", &[0x83, 0b11_000_000, 0xff]);
+        r.pass("add eax, 0xff", &[0x81, 0b11_000_000, 0xff, 0x00, 0x00, 0x00]);
         r.pass(
             "add eax, 0x0100",
             &[0x81, 0b11_000_000, 0x00, 0x01, 0x00, 0x00],
@@ -1759,7 +1769,7 @@ mod tests {
             "add eax, 0xffffffff",
             &[0x81, 0b11_000_000, 0xff, 0xff, 0xff, 0xff],
         );
-        r.fail("add eax, 0x100000000", 9);
+        r.fail("add eax, 0x100000000", 0);
 
         assert!(!r.failed);
     }

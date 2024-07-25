@@ -343,11 +343,11 @@ draw_char:
 ; sprite: eax, x: ebx, y: ecx
 draw_tile:
   push r8
-  lea rsi, [sprites]
+  lea rsi, [tiles-9*2]
   lea rdi, [screen]
   imul ebx, ebx, 24 * 4
   imul ecx, ecx, 24 * 4 * 480
-  imul eax, eax, 18
+  imul eax, eax, 9 * 2
   add rdi, rbx
   add rdi, rcx
   add rsi, rax
@@ -902,8 +902,7 @@ intern_atom_wm_delete_window:
   .i32 16; length of name
   .i8 "WM_DELETE_WINDOW"
 
-sprites:
-  .i16 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000
+tiles:
   .i16 0x2000 0x1048 0x0002 0x9480 0x0100 0x4000 0x4020 0x9100 0x2004
   .i16 0xf000 0xf7ff 0x77ef 0x09d9 0x0000 0x0000 0x0000 0x0000 0x0000
 

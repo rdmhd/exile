@@ -12,7 +12,6 @@ struct Addr<'a> {
     scale: u32,
     disp: i64,
     #[allow(dead_code)]
-    disp_at: usize,
     label: Option<(LabelName<'a>, usize)>,
 }
 
@@ -1248,7 +1247,6 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
     let mut index = None;
     let mut scale: u32 = 1;
     let mut disp: i64 = 0;
-    let mut disp_at: usize = 0;
 
     loop {
         skip_whitespace(cur);
@@ -1303,16 +1301,22 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
             } else {
                 label = Some(parse_label((ident, at), cur, input)?);
             }
-        } else if let Some((int, at)) = match_integer(cur)? {
-            if disp_at == 0 {
-                disp_at = at;
-            }
+        } else if let Some(int) = match_expression(cur)? {
             disp += int as i64; // TODO: check for overflow
         } else {
             return error_at(cur.off, "expected address component");
         }
 
         skip_whitespace(cur);
+
+        if match_char('-', cur) {
+            skip_whitespace(cur);
+            if let Some(int) = match_expression(cur)? {
+                disp -= int as i64; // TODO: check for overflow
+            } else {
+                return error_at(cur.off, "expected expression");
+            }
+        }
 
         if !match_char('+', cur) {
             break;
@@ -1328,7 +1332,6 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
         index,
         scale,
         disp,
-        disp_at,
         label,
     })
 }

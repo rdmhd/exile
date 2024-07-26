@@ -579,13 +579,14 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 76] = [
+    static INSNS: [Insn; 79] = [
         insn("add",     RM32,  R32,     None,    0,       &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,     None,    REX_W,   &[0x01],       0, Enc::MR),
         insn("add",     RM32,  Imm8sx,  None,    0,       &[0x83],       0, Enc::MI),
         insn("add",     RM64,  Imm8sx,  None,    REX_W,   &[0x83],       0, Enc::MI),
         insn("add",     RM32,  Imm32,   None,    0,       &[0x81],       0, Enc::MI),
         insn("add",     RM64,  Imm32sx, None,    REX_W,   &[0x81],       0, Enc::MI),
+        insn("and",     RM8,   Imm8,    None,    0,       &[0x80],       4, Enc::MI),
         insn("and",     RM32,  Imm8sx,  None,    0,       &[0x83],       4, Enc::MI),
         insn("call",    Rel32, None,    None,    0,       &[0xe8],       0, Enc::D),
         insn("cmove",   R32,   RM32,    None,    0,       &[0x0f, 0x44], 0, Enc::RM),
@@ -636,6 +637,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("movzx",   R32,   RM16,    None,    0,       &[0x0f, 0xb7], 0, Enc::RM),
         insn("neg",     RM32,  None,    None,    0,       &[0xf7],       3, Enc::M),
         insn("or",      RM8,   Imm8,    None,    0,       &[0x80],       1, Enc::MI),
+        insn("or",      RM8,   R8,      None,    0,       &[0x08],       0, Enc::MR),
         insn("or",      RM32,  Imm8sx,  None,    0,       &[0x83],       1, Enc::MI),
         insn("or",      RM32,  R32,     None,    0,       &[0x09],       0, Enc::MR),
         insn("pop",     R64,   None,    None,    0,       &[0x58],       0, Enc::O),
@@ -643,6 +645,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("rdrand",  R32,   None,    None,    0,       &[0x0f, 0xc7], 6, Enc::M),
         insn("ret",     None,  None,    None,    0,       &[0xc3],       0, Enc::ZO),
         insn("xor",     RM32,  R32,     None,    0,       &[0x31],       0, Enc::MR),
+        insn("setnz",   RM8,   None,    None,    0,       &[0x0f, 0x95], 0, Enc::M),
         insn("setz",    RM8,   None,    None,    0,       &[0x0f, 0x94], 0, Enc::M),
         insn("shl",     RM32,  Imm8,    None,    0,       &[0xc1],       4, Enc::MI),
         insn("shr",     RM32,  One,     None,    0,       &[0xd1],       5, Enc::M1),

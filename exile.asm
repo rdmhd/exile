@@ -199,8 +199,7 @@ rdrand eax
 mov [rng_state], eax
 
 call generate_map
-call draw_tilemap
-call draw_char
+call draw_world
 
 main_loop:
 ; read event
@@ -260,8 +259,7 @@ process_keydown:
   call clear_map
   call generate_map
   call clear_screen
-  call draw_tilemap
-  call draw_char
+  call draw_world
   jmp refresh_screen
 .move_right:
   mov ebx, 1
@@ -294,23 +292,25 @@ exit:
   xor edi, edi
   syscall
 
-draw_char:
+; x: eax, y: ebx, sprite: ecx
+draw_sprite:
   push r8
   push r9
 
-  movzx eax, m8 [char_x]
-  movzx ebx, m8 [char_y]
-  lea rcx, [screen]
+  lea rdx, [screen]
   imul eax, eax, 24 * 4
   imul ebx, ebx, 24 * 4 * 480
-  add rcx, rax
-  add rcx, rbx
+  add rdx, rax
+  add rdx, rbx
+
+  imul edi, ecx, 9 * 4
+  lea rcx, [sprites]
+  add rcx, rdi
 
   xor r8d, r8d ; val counter
   xor r9d, r9d ; x counter
 
-: lea rax, [char]
-  mov eax, [rax+r8*4]
+: mov eax, [rcx+r8*4]
   mov ebx, 16
 : mov ebp, eax
   and ebp, 0x3
@@ -319,16 +319,16 @@ draw_char:
   mov edi, 0x000000
   cmp ebp, 0x2
   cmove esi, edi
-  mov m32 [rcx], esi
-  mov m32 [rcx+4], esi
-  mov m32 [rcx+1920], esi
-  mov m32 [rcx+1920+4], esi
+  mov m32 [rdx], esi
+  mov m32 [rdx+4], esi
+  mov m32 [rdx+1920], esi
+  mov m32 [rdx+1920+4], esi
 : inc r9d
   cmp r9d, 12
   jne >
-  add rcx, (480 * 2 - 24) * 4
+  add rdx, (480 * 2 - 24) * 4
   xor r9d, r9d
-: add rcx, 8
+: add rdx, 8
   shr eax, 2
   dec ebx
   jnz <<<
@@ -336,8 +336,8 @@ draw_char:
   cmp r8d, 9
   jl <<<<
 
-  pop r8
   pop r9
+  pop r8
   ret
 
 ; sprite: eax, x: ebx, y: ecx
@@ -386,7 +386,7 @@ draw_tilemap:
 : xor r9d, r9d ; x counter
 : movzx eax, m8 [r8]
   inc r8
-  and eax, 0x7f
+  and eax, 0x3
   jz >
   mov ebx, r9d
   mov ecx, r10d
@@ -398,6 +398,26 @@ draw_tilemap:
   cmp r10d, 15
   jne <<<
   pop r10
+  pop r9
+  pop r8
+  ret
+
+draw_world:
+  push r8
+  push r9
+  call draw_tilemap
+
+  lea r8, [entities]
+  mov r9d, 4
+
+: movzx eax, m8 [r8+0]
+  movzx ebx, m8 [r8+1]
+  movzx ecx, m8 [r8+2]
+  call draw_sprite
+  add r8, 3
+  dec r9d
+  jnz <
+
   pop r9
   pop r8
   ret
@@ -418,8 +438,8 @@ move_char:
   push r8
   push r9
   ; store original coords for later use
-  movzx r8d, m8 [char_x]
-  movzx r9d, m8 [char_y]
+  movzx r8d, m8 [entities+0]
+  movzx r9d, m8 [entities+1]
   ; compute new coords
   add ebx, r8d
   add ecx, r9d
@@ -430,20 +450,29 @@ move_char:
   lea rsi, [tilemap]
   test m8 [rsi+rax], 0x80
   jz >>
+  test m8 [rsi+rax], 0x70
+  jnz >>
   ; store new character coords
-  mov [char_x], bl
-  mov [char_y], cl
+  mov [entities+0], bl
+  mov [entities+1], cl
+  ; add entity id to tile
+  or m8 [rsi+rax], 0x10
   ; get offset into the tilemap for the old coords
   imul eax, r9d, 20
   add eax, r8d
+  ; remote entity id from tile
+  and m8 [rsi+rax], 0x8f
   ; if the tile has a sprite, redraw it
   movzx eax, m8 [rsi+rax]
-  and eax, 0x7f
+  and eax, 0x3
   jz >
   mov ebx, r8d
   mov ecx, r9d
   call draw_tile
-: call draw_char
+  movzx eax, m8 [entities+0]
+  movzx ebx, m8 [entities+1]
+  xor ecx, ecx
+: call draw_sprite
 : pop r9
   pop r8
   ret
@@ -532,19 +561,7 @@ generate_map:
   jmp .next_connection
 .rooms_connected:
 
-  ; set character starting pos to center of first room
-  movzx eax, m8 [rsp]
-  movzx ebx, m8 [rsp+1]
-  movzx ecx, m8 [rsp+2]
-  movzx edx, m8 [rsp+3]
-  sub ecx, eax
-  sub edx, ebx
-  shr ecx, 1
-  shr edx, 1
-  add eax, ecx
-  add ebx, edx
-  mov [char_x], al
-  mov [char_y], bl
+  call place_entities
 
   ; postprocess
   mov r8d, 20
@@ -564,6 +581,45 @@ generate_map:
   jl .next_tile
 
   add rsp, 32
+  pop r9
+  pop r8
+  ret
+
+place_entities:
+  push r8
+  push r9
+  push r10
+
+  lea r8, [entities]
+  xor r9d, r9d
+
+: mov eax, 18
+  call random_int
+  inc eax
+  mov r10d, eax
+  mov eax, 13
+  call random_int
+  inc eax
+
+  lea rbx, [tilemap]
+  imul ecx, eax, 20
+  add ecx, r10d
+  test m8 [rbx+rcx], 0xf0
+  jz <
+
+  mov edx, r9d
+  inc edx
+  shl edx, 4
+  or m8 [rbx+rcx], dl
+
+  mov [r8+0], r10b
+  mov [r8+1], al
+  add r8, 3
+  inc r9d
+  cmp r9d, 4
+  jl <
+
+  pop r10
   pop r9
   pop r8
   ret
@@ -905,13 +961,20 @@ intern_atom_wm_delete_window:
 tiles:
   .i16 0x2000 0x1048 0x0002 0x9480 0x0100 0x4000 0x4020 0x9100 0x2004
   .i16 0xf000 0xf7ff 0x77ef 0x09d9 0x0000 0x0000 0x0000 0x0000 0x0000
+  .i16 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0004 0x0000
 
-char:
-  .i32 0x80002a00 0x95a000aa 0x0a556802 0xa00a65a0 0x96a00a69 0x02aa6802 0x560a695a 0xaa5a2969 0x0aaaa829
+sprites:
+  .i32 0x8002aa00 0x56a00aaa 0x2955a02a 0xa82996a0 0x5aa829a6 0x2aa9a82a 0x5a29a56a 0xa96aa5a5 0x2aaaa8a6
+  .i32 0x00000000 0xaa800000 0x0aaaa800 0x6a2a95aa 0x5a6a2a55 0x2a556a2a 0x9a29999a 0xa6a829a6 0x02aaa00a
 
-char_x: .i8 3
-char_y: .i8 2
 rng_state: .i32 0
+
+; each entity has x, y and a sprite
+entities:
+  .i8 0 0 0
+  .i8 0 0 1
+  .i8 0 0 1
+  .i8 0 0 1
 
 tilemap:
   .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0

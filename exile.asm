@@ -265,22 +265,30 @@ process_keydown:
   mov ebx, 1
   xor ecx, ecx
   call move_char
-  jmp refresh_screen ; TODO: only if player moved, else jump to next event
+  test eax, eax
+  jz main_loop
+  jmp refresh_screen
 .move_down:
   xor ebx, ebx
   mov ecx, 1
   call move_char
-  jmp refresh_screen ; TODO: only if player moved, else jump to next event
+  test eax, eax
+  jz main_loop
+  jmp refresh_screen
 .move_left:
   mov ebx, -1
   xor ecx, ecx
   call move_char
-  jmp refresh_screen ; TODO: only if player moved, else jump to next event
+  test eax, eax
+  jz main_loop
+  jmp refresh_screen
 .move_up:
   xor ebx, ebx
   mov ecx, -1
   call move_char
-  jmp refresh_screen ; TODO: only if player moved, else jump to next event
+  test eax, eax
+  jz main_loop
+  jmp refresh_screen
 
 exit_error:
   mov eax, 60
@@ -434,12 +442,14 @@ clear_screen:
 
 ; @ebx: delta x
 ; @ecx: delta y
+; -> if moved: eax
 move_char:
   mov edx, 1
   call move_entity
   test eax, eax
   jz >
   call simulate_entities
+  mov eax, 1
 : ret
 
 ; delta x: ebx, delta y: ecx, id: edx

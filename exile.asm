@@ -265,22 +265,22 @@ process_keydown:
   mov ebx, 1
   xor ecx, ecx
   call move_char
-  jmp refresh_screen
+  jmp refresh_screen ; TODO: only if player moved, else jump to next event
 .move_down:
   xor ebx, ebx
   mov ecx, 1
   call move_char
-  jmp refresh_screen
+  jmp refresh_screen ; TODO: only if player moved, else jump to next event
 .move_left:
   mov ebx, -1
   xor ecx, ecx
   call move_char
-  jmp refresh_screen
+  jmp refresh_screen ; TODO: only if player moved, else jump to next event
 .move_up:
   xor ebx, ebx
   mov ecx, -1
   call move_char
-  jmp refresh_screen
+  jmp refresh_screen ; TODO: only if player moved, else jump to next event
 
 exit_error:
   mov eax, 60
@@ -407,7 +407,7 @@ draw_world:
   push r9
   call draw_tilemap
 
-  lea r8, [entities]
+  lea r8, [entities+3]
   mov r9d, 4
 
 : movzx eax, m8 [r8+0]
@@ -435,45 +435,98 @@ clear_screen:
 ; @ebx: delta x
 ; @ecx: delta y
 move_char:
+  mov edx, 1
+  call move_entity
+  test eax, eax
+  jz >
+  call simulate_entities
+: ret
+
+; delta x: ebx, delta y: ecx, id: edx
+; -> entity moved: eax
+move_entity:
   push r8
   push r9
+  push r10
+  xor eax, eax
   ; store original coords for later use
-  movzx r8d, m8 [entities+0]
-  movzx r9d, m8 [entities+1]
+  imul esi, edx, 3
+  lea r10, [entities]
+  add r10, rsi
+  movzx r8d, m8 [r10+0]
+  movzx r9d, m8 [r10+1]
   ; compute new coords
   add ebx, r8d
   add ecx, r9d
   ; get offset into the tilemap for the new coords
-  imul eax, ecx, 20
-  add eax, ebx
+  imul edi, ecx, 20
+  add edi, ebx
   ; check if the tile is walkable
   lea rsi, [tilemap]
-  test m8 [rsi+rax], 0x80
+  ; TODO: change bit to indicate "not-walkable" and do only one test
+  test m8 [rsi+rdi], 0x80
   jz >>
-  test m8 [rsi+rax], 0x70
+  test m8 [rsi+rdi], 0x70
   jnz >>
   ; store new character coords
-  mov [entities+0], bl
-  mov [entities+1], cl
+  mov [r10+0], bl
+  mov [r10+1], cl
   ; add entity id to tile
-  or m8 [rsi+rax], 0x10
+  shl edx, 4
+  or m8 [rsi+rdi], dl
   ; get offset into the tilemap for the old coords
-  imul eax, r9d, 20
-  add eax, r8d
-  ; remote entity id from tile
-  and m8 [rsi+rax], 0x8f
+  imul edi, r9d, 20
+  add edi, r8d
+  ; remove entity id from tile
+  and m8 [rsi+rdi], 0x8f
   ; if the tile has a sprite, redraw it
-  movzx eax, m8 [rsi+rax]
+  movzx eax, m8 [rsi+rdi]
   and eax, 0x3
   jz >
   mov ebx, r8d
   mov ecx, r9d
   call draw_tile
-  movzx eax, m8 [entities+0]
-  movzx ebx, m8 [entities+1]
-  xor ecx, ecx
+  movzx eax, m8 [r10+0]
+  movzx ebx, m8 [r10+1]
+  movzx ecx, m8 [r10+2]
 : call draw_sprite
-: pop r9
+  mov eax, 1
+: pop r10
+  pop r9
+  pop r8
+  ret
+
+simulate_entities:
+  push r8
+  mov r8d, 2
+.choose:
+  mov eax, 4
+  call random_int
+  cmp eax, 0
+  jne >
+  mov ebx, 1
+  xor ecx, ecx
+  jmp .move
+: cmp eax, 1
+  jne >
+  mov ebx, -1
+  xor ecx, ecx
+  jmp .move
+: cmp eax, 2
+  jne >
+  xor ebx, ebx
+  mov ecx, 1
+  jmp .move
+: cmp eax, 3
+  xor ebx, ebx
+  mov ecx, -1
+  jmp .move
+.move:
+  mov edx, r8d
+  call move_entity
+  inc r8d
+  cmp r8d, 5
+  jl .choose
   pop r8
   ret
 
@@ -590,9 +643,10 @@ place_entities:
   push r9
   push r10
 
-  lea r8, [entities]
-  xor r9d, r9d
+  lea r8, [entities+3]
+  mov r9d, 1
 
+  ; generate random coords
 : mov eax, 18
   call random_int
   inc eax
@@ -604,11 +658,15 @@ place_entities:
   lea rbx, [tilemap]
   imul ecx, eax, 20
   add ecx, r10d
-  test m8 [rbx+rcx], 0xf0
+  ; check if tile is walkable
+  test m8 [rbx+rcx], 0x80
   jz <
+  ; check if tile already has an entity
+  test m8 [rbx+rcx], 0x70
+  jnz <
 
+  ; add entity id to tile
   mov edx, r9d
-  inc edx
   shl edx, 4
   or m8 [rbx+rcx], dl
 
@@ -616,7 +674,7 @@ place_entities:
   mov [r8+1], al
   add r8, 3
   inc r9d
-  cmp r9d, 4
+  cmp r9d, 5
   jl <
 
   pop r10
@@ -971,11 +1029,16 @@ rng_state: .i32 0
 
 ; each entity has x, y and a sprite
 entities:
+  .i8 0 0 0 ; invalid entity
   .i8 0 0 0
   .i8 0 0 1
   .i8 0 0 1
   .i8 0 0 1
 
+; tile bits: WEEE--SS
+; W = walkable
+; E = entity id
+; S = sprite
 tilemap:
   .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
   .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0

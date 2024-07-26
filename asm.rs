@@ -1117,33 +1117,46 @@ fn match_operator(char: char) -> Option<i32> {
     }
 }
 
-fn parse_expression(lhs: i64, op: char, prec: i32, cur: &mut Cursor) -> Result<i64, Error> {
-    let mut rhs = if let Some(int) = match_primary(cur)? {
-        int
-    } else {
-        return error_at(cur.off, "unexpected end of expression");
-    };
+fn parse_expression(mut lhs: i64, mut op: char, prec: i32, cur: &mut Cursor) -> Result<i64, Error> {
+    loop {
+        let mut rhs = if let Some(int) = match_primary(cur)? {
+            int
+        } else {
+            return error_at(cur.off, "unexpected end of expression");
+        };
 
-    skip_whitespace(cur);
+        skip_whitespace(cur);
 
-    if let Some(prec2) = match_operator(cur.char) {
-        if prec2 > prec {
-            let op = cur.char;
-            advance(cur);
-            skip_whitespace(cur);
-            rhs = parse_expression(rhs, op, prec2, cur)?;
+        if let Some(prec2) = match_operator(cur.char) {
+            if prec2 > prec {
+                let op = cur.char;
+                advance(cur);
+                skip_whitespace(cur);
+                rhs = parse_expression(rhs, op, prec2, cur)?;
+            }
         }
+
+        match op {
+            '+' => lhs += rhs,
+            '-' => lhs -= rhs,
+            '*' => lhs *= rhs,
+            '/' => lhs /= rhs,
+            _ => unreachable!(),
+        };
+
+        if let Some(prec2) = match_operator(cur.char) {
+            if prec2 == prec {
+                op = cur.char;
+                advance(cur);
+                skip_whitespace(cur);
+                continue;
+            }
+        }
+
+        break;
     }
 
-    let res = match op {
-        '+' => lhs + rhs,
-        '-' => lhs - rhs,
-        '*' => lhs * rhs,
-        '/' => lhs / rhs,
-        _ => unreachable!(),
-    };
-
-    Ok(res)
+    Ok(lhs)
 }
 
 fn match_expression(cur: &mut Cursor) -> Result<Option<i64>, Error> {
@@ -1984,7 +1997,9 @@ mod tests {
 
         r.pass("mov eax, 2 * 3 + 4", &[0xb8, 0x0a, 0x00, 0x00, 0x00]);
         r.pass("mov eax, 2 + 3 * 4", &[0xb8, 0x0e, 0x00, 0x00, 0x00]);
+        r.pass("mov eax, 2 * 3 * 4", &[0xb8, 0x18, 0x00, 0x00, 0x00]);
         r.pass("mov eax, 2 + 3 * 4 - 6", &[0xb8, 0x08, 0x00, 0x00, 0x00]);
+        r.pass("mov eax, 2 + 3 * 4 * 5 - 12 / (3 * 2)", &[0xb8, 0x3c, 0x00, 0x00, 0x00]);
 
         r.pass("mov eax, 2 * (3 + 4)", &[0xb8, 0x0e, 0x00, 0x00, 0x00]);
         r.pass("mov eax, (2 + 3) * 4", &[0xb8, 0x14, 0x00, 0x00, 0x00]);

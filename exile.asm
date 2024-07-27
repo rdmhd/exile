@@ -194,6 +194,9 @@ syscall
 
 add rsp, 8276
 
+lea rax, [sockfd]
+mov [rax], r12d
+
 ; seed rng
 rdrand eax
 mov [rng_state], eax
@@ -203,8 +206,9 @@ call draw_world
 
 main_loop:
 ; read event
+  lea rax, [sockfd]
+  mov edi, [rax]
   xor eax, eax
-  mov edi, r12d
   mov rsi, rsp
   mov edx, 32
   syscall
@@ -227,8 +231,9 @@ main_loop:
 
 refresh_screen:
   ; write put image request
+  lea rax, [sockfd]
+  mov edi, [rax]
   mov eax, 1
-  mov edi, r12d
   lea rsi, [put_image]
   mov edx, (7 + 480 * 360) * 4
   syscall
@@ -413,6 +418,7 @@ draw_tilemap:
 draw_world:
   push r8
   push r9
+  push r10
   call draw_tilemap
 
   lea r8, [entities+3]
@@ -426,6 +432,51 @@ draw_world:
   dec r9d
   jnz <
 
+  movzx r8d, m8 [entities+6]
+  movzx r9d, m8 [entities+7]
+
+  mov r10d, -5
+: mov eax, r8d
+  mov ebx, r9d
+  mov ecx, eax
+  mov edx, ebx
+  add ecx, r10d
+  add edx, 5
+  mov esi, 5
+  call bresenham
+
+  mov eax, r8d
+  mov ebx, r9d
+  mov ecx, eax
+  mov edx, ebx
+  add ecx, r10d
+  sub edx, 5
+  mov esi, 5
+  call bresenham
+
+  mov eax, r8d
+  mov ebx, r9d
+  mov ecx, eax
+  mov edx, ebx
+  add ecx, 5
+  add edx, r10d
+  mov esi, 5
+  call bresenham
+
+  mov eax, r8d
+  mov ebx, r9d
+  mov ecx, eax
+  mov edx, ebx
+  sub ecx, 5
+  add edx, r10d
+  mov esi, 5
+  call bresenham
+
+  inc r10d
+  cmp r10d, 5
+  jle <
+
+  pop r10
   pop r9
   pop r8
   ret
@@ -550,6 +601,157 @@ simulate_entities:
   pop r8
   ret
 
+; x0: eax, y0: ebx, x1: ecx, y1: edx, maxdist: esi
+bresenham:
+  push r8
+  push r9
+  push r10
+  push r11
+  push r12
+  push r13
+  sub rsp, 10 * 2
+
+  mov r13d, esi
+
+  mov esi, 1
+  mov edi, 18
+  ; clamp x0 to map bounds
+  cmp eax, esi
+  cmovl eax, esi
+  cmp eax, edi
+  cmovg eax, edi
+  ; clamp x1 to map bounds
+  cmp ecx, esi
+  cmovl ecx, esi
+  cmp ecx, edi
+  cmovg ecx, edi
+
+  mov esi, 1
+  mov edi, 13
+  ; clamp y0 to map bounds
+  cmp ebx, esi
+  cmovl ebx, esi
+  cmp ebx, edi
+  cmovg ebx, edi
+  ; clamp y1 to map bounds
+  cmp edx, esi
+  cmovl edx, esi
+  cmp edx, edi
+  cmovg edx, edi
+
+  mov r8d, ecx ; x1
+  mov r9d, edx ; y1
+
+  ; [esi] dx = abs(x1 - x0)
+  mov ecx, r8d
+  sub ecx, eax
+  mov ebp, ecx
+  sar ebp, 31
+  mov esi, ecx
+  add esi, ebp
+  xor esi, ebp
+  ; [ecx] sx = sign(x1 - x0)
+  sar ecx, 31
+  or ecx, 1
+  ; [edi] dy = -abs(y1 - y0)
+  mov edx, r9d
+  sub edx, ebx
+  mov ebp, edx
+  sar ebp, 31
+  mov edi, edx
+  add edi, ebp
+  xor edi, ebp
+  neg edi
+  ; [edx] sy = sign(y1 - y0)
+  sar edx, 31
+  or edx, 1
+  ; [ebp] e = dx + dy
+  mov ebp, esi
+  add ebp, edi
+
+  xor r10d, r10d
+  ; TODO: there is no point in using the initial point
+: mov [rsp+r10*2], al
+  mov [rsp+r10*2+1], bl
+  inc r10d
+  ; don't continue if the tile is a wall
+  lea r11, [tilemap]
+  imul r12d, ebx, 20
+  add r11, rax
+  add r11, r12
+  movzx r12d, m8 [r11]
+  cmp m8 [r11], 3
+  je .done
+  ; compute e2
+  mov r11d, ebp
+  add r11d, ebp
+  ; if e2 >= dy
+  cmp r11d, edi
+  jl >
+  cmp eax, r8d
+  je .done
+  add ebp, edi
+  add eax, ecx
+  dec r13d
+  ; if e <= dx
+: cmp r11d, esi
+  jg >
+  cmp ebx, r9d
+  je .done
+  add ebp, esi
+  add ebx, edx
+  dec r13d
+: cmp r13d, 0
+  jl .done
+  jmp <<<
+
+.done:
+  ; draw points
+  mov r11d, 1
+: movzx ebx, m8 [rsp+r11*2]
+  movzx ecx, m8 [rsp+r11*2+1]
+  call draw_point
+  inc r11d
+  cmp r11d, r10d
+  jl <
+
+  add rsp, 10 * 2
+  pop r13
+  pop r12
+  pop r11
+  pop r10
+  pop r9
+  pop r8
+  ret
+
+; x: ebx, y: ecx
+draw_point:
+  lea rax, [screen]
+  imul ebx, ebx, 24 * 4
+  imul ecx, ecx, 24 * 4 * 480
+  add ebx, 8 * 4
+  add ecx, 8 * 4 * 480
+  add rax, rbx
+  add rax, rcx
+  mov edi, 0xff00ab
+  mov m32 [rax], edi
+  mov m32 [rax+4], edi
+  mov m32 [rax+8], edi
+  mov m32 [rax+12], edi
+  mov m32 [rax+480*4], edi
+  mov m32 [rax+480*4+4], edi
+  mov m32 [rax+480*4+8], edi
+  mov m32 [rax+480*4+12], edi
+  mov m32 [rax+480*2*4], edi
+  mov m32 [rax+480*2*4+4], edi
+  mov m32 [rax+480*2*4+8], edi
+  mov m32 [rax+480*2*4+12], edi
+  mov m32 [rax+480*3*4], edi
+  mov m32 [rax+480*3*4+4], edi
+  mov m32 [rax+480*3*4+8], edi
+  mov m32 [rax+480*3*4+12], edi
+  ret
+
 clear_map:
   lea rax, [tilemap]
   xor ebx, ebx
@@ -562,6 +764,7 @@ clear_map:
 generate_map:
   push r8
   push r9
+  push r10
   sub rsp, 32 ; max rooms * 4
 
   xor r8d, r8d ; room count
@@ -653,7 +856,34 @@ generate_map:
   cmp r8d, 280
   jl .next_tile
 
+  ; randomly place walls
+  mov r10d, 1000
+  mov r9d, 10
+  mov eax, 18
+: test r10d, r10d
+  jz .done
+  call random_int
+  inc eax
+  mov r8d, eax
+  mov eax, 12
+  call random_int
+  inc eax
+  imul eax, eax, 20
+  add eax, r8d
+  lea rbx, [tilemap]
+  add rbx, rax
+  dec r10d
+  test m8 [rbx], 0x3
+  jnz <
+  cmp m8 [rbx+20], 0x81
+  jne <
+  mov m8 [rbx], 3
+  dec r9d
+  jnz <
+
+.done:
   add rsp, 32
+  pop r10
   pop r9
   pop r8
   ret
@@ -1039,6 +1269,7 @@ intern_atom_wm_delete_window:
 tiles:
   .i16 0x2000 0x1048 0x0002 0x9480 0x0100 0x4000 0x4020 0x9100 0x2004
   .i16 0xf000 0xf7ff 0x77ef 0x09d9 0x0000 0x0000 0x0000 0x0000 0x0000
+  .i16 0xf000 0xff7f 0x7ff7 0xf000 0xff7f 0x7ff7 0xf7ff 0xff7f 0x7ff7
   .i16 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0004 0x0000
 
 sprites:
@@ -1046,6 +1277,7 @@ sprites:
   .i32 0x00000000 0xaa800000 0x0aaaa800 0x6a2a95aa 0x5a6a2a55 0x2a556a2a 0x9a29999a 0xa6a829a6 0x02aaa00a
 
 rng_state: .i32 0
+sockfd: .i32 0
 
 ; each entity has x, y and a sprite
 entities:

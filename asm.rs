@@ -579,7 +579,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 80] = [
+    static INSNS: [Insn; 84] = [
         insn("add",     RM32,  R32,     None,    0,       &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,     None,    REX_W,   &[0x01],       0, Enc::MR),
         insn("add",     RM32,  Imm8sx,  None,    0,       &[0x83],       0, Enc::MI),
@@ -591,7 +591,9 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("call",    Rel32, None,    None,    0,       &[0xe8],       0, Enc::D),
         insn("cmove",   R32,   RM32,    None,    0,       &[0x0f, 0x44], 0, Enc::RM),
         insn("cmovg",   R32,   RM32,    None,    0,       &[0x0f, 0x4f], 0, Enc::RM),
+        insn("cmovg",   R32,   RM32,    None,    0,       &[0x0f, 0x4f], 0, Enc::RM),
         insn("cmovg",   R64,   RM64,    None,    REX_W,   &[0x0f, 0x4f], 0, Enc::RM),
+        insn("cmovl",   R32,   RM32,    None,    0,       &[0x0f, 0x4c], 0, Enc::RM),
         insn("cmovnz",  R32,   RM32,    None,    0,       &[0x0f, 0x45], 0, Enc::RM),
         insn("cmovz",   R32,   RM32,    None,    0,       &[0x0f, 0x44], 0, Enc::RM),
         insn("cmp",     RM32,  R32,     None,    0,       &[0x39],       0, Enc::MR),
@@ -648,11 +650,13 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("xor",     RM32,  R32,     None,    0,       &[0x31],       0, Enc::MR),
         insn("setnz",   RM8,   None,    None,    0,       &[0x0f, 0x95], 0, Enc::M),
         insn("setz",    RM8,   None,    None,    0,       &[0x0f, 0x94], 0, Enc::M),
+        insn("sar",     RM32,  Imm8,    None,    0,       &[0xc1],       7, Enc::MI),
         insn("shl",     RM32,  Imm8,    None,    0,       &[0xc1],       4, Enc::MI),
         insn("shr",     RM32,  One,     None,    0,       &[0xd1],       5, Enc::M1),
         insn("shr",     RM32,  Imm8,    None,    0,       &[0xc1],       5, Enc::MI),
         insn("sub",     RM32,  R32,     None,    0,       &[0x29],       0, Enc::MR),
         insn("sub",     RM64,  R64,     None,    REX_W,   &[0x29],       0, Enc::MR),
+        insn("sub",     RM32,  Imm8sx,  None,    0,       &[0x83],       5, Enc::MI),
         insn("sub",     RM64,  Imm32sx, None,    REX_W,   &[0x81],       5, Enc::MI),
         insn("syscall", None,  None,    None,    0,       &[0x0f, 0x05], 0, Enc::ZO),
         insn("test",    RM8,   Imm8,    None,    0,       &[0xf6],       0, Enc::MI),

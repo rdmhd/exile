@@ -446,14 +446,18 @@ clear_screen:
 move_char:
   mov edx, 1
   call move_entity
-  test eax, eax
+  test ebx, ebx
   jz >
-  call simulate_entities
+  ; TODO: attack here
+  jmp >>
+: test eax, eax
+  jz >>
+: call simulate_entities
   mov eax, 1
 : ret
 
 ; delta x: ebx, delta y: ecx, id: edx
-; -> entity moved: eax
+; -> entity moved: eax, blocking entity: ebx
 move_entity:
   push r8
   push r9
@@ -473,11 +477,17 @@ move_entity:
   add edi, ebx
   ; check if the tile is walkable
   lea rsi, [tilemap]
-  ; TODO: change bit to indicate "not-walkable" and do only one test
   test m8 [rsi+rdi], 0x80
   jz >>
-  test m8 [rsi+rdi], 0x70
+  ; check if the tile is occupied by another entity
+  ; TODO: this is probably only useful to char movement
+  mov ebp, ebx
+  movzx ebx, m8 [rsi+rdi]
+  and ebx, 0x70
+  shr ebx, 4
+  test ebx, ebx
   jnz >>
+  mov ebx, ebp
   ; store new character coords
   mov [r10+0], bl
   mov [r10+1], cl

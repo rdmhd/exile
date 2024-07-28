@@ -222,8 +222,9 @@ enum Op {
     Rel32,
 }
 
-const REGS8: [&str; 12] = [
-    "al", "cl", "dl", "bl", "", "", "", "", "r8b", "r9b", "r10b", "r11b",
+const REGS8: [&str; 16] = [
+    "al", "cl", "dl", "bl", "", "", "", "", "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b",
+    "r15b",
 ];
 
 const REGS32: [&str; 16] = [
@@ -579,7 +580,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 84] = [
+    static INSNS: [Insn; 90] = [
         insn("add",     RM32,  R32,     None,    0,       &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,     None,    REX_W,   &[0x01],       0, Enc::MR),
         insn("add",     RM32,  Imm8sx,  None,    0,       &[0x83],       0, Enc::MI),
@@ -594,6 +595,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("cmovg",   R32,   RM32,    None,    0,       &[0x0f, 0x4f], 0, Enc::RM),
         insn("cmovg",   R64,   RM64,    None,    REX_W,   &[0x0f, 0x4f], 0, Enc::RM),
         insn("cmovl",   R32,   RM32,    None,    0,       &[0x0f, 0x4c], 0, Enc::RM),
+        insn("cmovne",  R32,   RM32,    None,    0,       &[0x0f, 0x45], 0, Enc::RM),
         insn("cmovnz",  R32,   RM32,    None,    0,       &[0x0f, 0x45], 0, Enc::RM),
         insn("cmovz",   R32,   RM32,    None,    0,       &[0x0f, 0x44], 0, Enc::RM),
         insn("cmp",     RM32,  R32,     None,    0,       &[0x39],       0, Enc::MR),
@@ -638,7 +640,9 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("movsxd",  R64,   RM32,    None,    REX_W,   &[0x63],       0, Enc::RM),
         insn("movzx",   R32,   RM8,     None,    0,       &[0x0f, 0xb6], 0, Enc::RM),
         insn("movzx",   R32,   RM16,    None,    0,       &[0x0f, 0xb7], 0, Enc::RM),
+        insn("neg",     RM8,   None,    None,    0,       &[0xf6],       3, Enc::M),
         insn("neg",     RM32,  None,    None,    0,       &[0xf7],       3, Enc::M),
+        insn("not",     RM8,   None,    None,    0,       &[0xf6],       2, Enc::M),
         insn("or",      RM8,   Imm8,    None,    0,       &[0x80],       1, Enc::MI),
         insn("or",      RM8,   R8,      None,    0,       &[0x08],       0, Enc::MR),
         insn("or",      RM32,  Imm8sx,  None,    0,       &[0x83],       1, Enc::MI),
@@ -648,6 +652,9 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("rdrand",  R32,   None,    None,    0,       &[0x0f, 0xc7], 6, Enc::M),
         insn("ret",     None,  None,    None,    0,       &[0xc3],       0, Enc::ZO),
         insn("xor",     RM32,  R32,     None,    0,       &[0x31],       0, Enc::MR),
+        insn("sete",    RM8,   None,    None,    0,       &[0x0f, 0x94], 0, Enc::M),
+        insn("setl",    RM8,   None,    None,    0,       &[0x0f, 0x9c], 0, Enc::M),
+        insn("setle",   RM8,   None,    None,    0,       &[0x0f, 0x9e], 0, Enc::M),
         insn("setnz",   RM8,   None,    None,    0,       &[0x0f, 0x95], 0, Enc::M),
         insn("setz",    RM8,   None,    None,    0,       &[0x0f, 0x94], 0, Enc::M),
         insn("sar",     RM32,  Imm8,    None,    0,       &[0xc1],       7, Enc::MI),
@@ -2007,7 +2014,10 @@ mod tests {
         r.pass("mov eax, 2 + 3 * 4", &[0xb8, 0x0e, 0x00, 0x00, 0x00]);
         r.pass("mov eax, 2 * 3 * 4", &[0xb8, 0x18, 0x00, 0x00, 0x00]);
         r.pass("mov eax, 2 + 3 * 4 - 6", &[0xb8, 0x08, 0x00, 0x00, 0x00]);
-        r.pass("mov eax, 2 + 3 * 4 * 5 - 12 / (3 * 2)", &[0xb8, 0x3c, 0x00, 0x00, 0x00]);
+        r.pass(
+            "mov eax, 2 + 3 * 4 * 5 - 12 / (3 * 2)",
+            &[0xb8, 0x3c, 0x00, 0x00, 0x00],
+        );
 
         r.pass("mov eax, 2 * (3 + 4)", &[0xb8, 0x0e, 0x00, 0x00, 0x00]);
         r.pass("mov eax, (2 + 3) * 4", &[0xb8, 0x14, 0x00, 0x00, 0x00]);

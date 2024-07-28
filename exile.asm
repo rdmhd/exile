@@ -353,6 +353,25 @@ draw_sprite:
   pop r8
   ret
 
+; entity id: eax
+draw_entity:
+  push r10
+  mov r10d, eax
+  lea rax, [entities]
+  lea r10, [rax+r10*4]
+  movzx eax, m8 [r10+0]
+  movzx ebx, m8 [r10+1]
+  movzx ecx, m8 [r10+2]
+  call draw_sprite
+  cmp m8 [r10+3], 0
+  je >
+  movzx ebx, m8 [r10+0]
+  movzx ecx, m8 [r10+1]
+  mov edx, 0xff0000
+  call draw_point
+: pop r10
+  ret
+
 ; sprite: eax, x: ebx, y: ecx
 draw_tile:
   push r8
@@ -415,66 +434,56 @@ draw_tilemap:
   pop r8
   ret
 
+redraw_tilemap:
+  push r8
+  push r9
+  push r10
+  push r11
+  lea r8, [tilemap]
+  xor r10d, r10d ; y counter
+: xor r9d, r9d ; x counter
+: movzx r11d, m8 [r8]
+  test r11b, 0x8 ; is the 'redraw' flag set?
+  jz >
+  mov eax, r11d
+  and eax, 0x3
+  mov ebx, r9d
+  mov ecx, r10d
+  call draw_tile
+  test r11b, 0x70 ; is there entity on the tile?
+  jz >
+  mov eax, r11d
+  shr eax, 4
+  and eax, 0x7
+  call draw_entity
+  and m8 [r8], 0xf7 ; remove 'redraw' flag
+: inc r8
+  inc r9d
+  cmp r9d, 20
+  jne <<
+  inc r10d
+  cmp r10d, 15
+  jne <<<
+  pop r11
+  pop r10
+  pop r9
+  pop r8
+  ret
+
 draw_world:
   push r8
   push r9
   push r10
   call draw_tilemap
 
-  lea r8, [entities+3]
-  mov r9d, 4
+  lea r8, [entities]
+  mov r9d, 1
 
-: movzx eax, m8 [r8+0]
-  movzx ebx, m8 [r8+1]
-  movzx ecx, m8 [r8+2]
-  call draw_sprite
-  add r8, 3
-  dec r9d
-  jnz <
-
-  movzx r8d, m8 [entities+6]
-  movzx r9d, m8 [entities+7]
-
-  mov r10d, -5
-: mov eax, r8d
-  mov ebx, r9d
-  mov ecx, eax
-  mov edx, ebx
-  add ecx, r10d
-  add edx, 5
-  mov esi, 5
-  call bresenham
-
-  mov eax, r8d
-  mov ebx, r9d
-  mov ecx, eax
-  mov edx, ebx
-  add ecx, r10d
-  sub edx, 5
-  mov esi, 5
-  call bresenham
-
-  mov eax, r8d
-  mov ebx, r9d
-  mov ecx, eax
-  mov edx, ebx
-  add ecx, 5
-  add edx, r10d
-  mov esi, 5
-  call bresenham
-
-  mov eax, r8d
-  mov ebx, r9d
-  mov ecx, eax
-  mov edx, ebx
-  sub ecx, 5
-  add edx, r10d
-  mov esi, 5
-  call bresenham
-
-  inc r10d
-  cmp r10d, 5
-  jle <
+: mov eax, r9d
+  call draw_entity
+  inc r9d
+  cmp r9d, 5
+  jl <
 
   pop r10
   pop r9
@@ -504,6 +513,7 @@ move_char:
 : test eax, eax
   jz >>
 : call simulate_entities
+  call redraw_tilemap
   mov eax, 1
 : ret
 
@@ -515,7 +525,7 @@ move_entity:
   push r10
   xor eax, eax
   ; store original coords for later use
-  imul esi, edx, 3
+  imul esi, edx, 4
   lea r10, [entities]
   add r10, rsi
   movzx r8d, m8 [r10+0]
@@ -529,7 +539,8 @@ move_entity:
   ; check if the tile is walkable
   lea rsi, [tilemap]
   test m8 [rsi+rdi], 0x80
-  jz >>
+  jz >
+
   ; check if the tile is occupied by another entity
   ; TODO: this is probably only useful to char movement
   mov ebp, ebx
@@ -537,30 +548,31 @@ move_entity:
   and ebx, 0x70
   shr ebx, 4
   test ebx, ebx
-  jnz >>
+  jnz >
   mov ebx, ebp
-  ; store new character coords
+
+  ; store new entity coords
   mov [r10+0], bl
   mov [r10+1], cl
+
+  movzx eax, m8 [rsi+rdi]
   ; add entity id to tile
   shl edx, 4
-  or m8 [rsi+rdi], dl
+  or eax, edx
+  ; set 'redraw' flag on the tile
+  or al, 0x8
+  mov [rsi+rdi], al
+
   ; get offset into the tilemap for the old coords
   imul edi, r9d, 20
   add edi, r8d
-  ; remove entity id from tile
-  and m8 [rsi+rdi], 0x8f
-  ; if the tile has a sprite, redraw it
   movzx eax, m8 [rsi+rdi]
-  and eax, 0x3
-  jz >
-  mov ebx, r8d
-  mov ecx, r9d
-  call draw_tile
-  movzx eax, m8 [r10+0]
-  movzx ebx, m8 [r10+1]
-  movzx ecx, m8 [r10+2]
-: call draw_sprite
+  ; remove entity id from tile
+  and al, 0x8f
+  ; set 'redraw' flag on the tile
+  or al, 0x8
+  mov [rsi+rdi], al
+
   mov eax, 1
 : pop r10
   pop r9
@@ -569,8 +581,37 @@ move_entity:
 
 simulate_entities:
   push r8
+  push r9
   mov r8d, 2
-.choose:
+  lea r9, [entities]
+: mov ebx, r8d
+  call move_randomly
+
+  movzx eax, m8 [r9+r8*4+0]
+  movzx ebx, m8 [r9+r8*4+1]
+  call char_visible
+  mov bl, [r9+r8*4+3]
+  mov [r9+r8*4+3], al
+  cmp al, bl
+  je >
+
+  movzx eax, m8 [r9+r8*4+0]
+  movzx ebx, m8 [r9+r8*4+1]
+  imul ebx, ebx, 20
+  lea rcx, [tilemap]
+  add rcx, rax
+  add rcx, rbx
+  or m8 [rcx], 0x8
+
+: inc r8d
+  cmp r8d, 5
+  jl <<
+  pop r9
+  pop r8
+  ret
+
+; entity id: ebx
+move_randomly:
   mov eax, 4
   call random_int
   cmp eax, 0
@@ -595,13 +636,10 @@ simulate_entities:
 .move:
   mov edx, r8d
   call move_entity
-  inc r8d
-  cmp r8d, 5
-  jl .choose
-  pop r8
   ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx, maxdist: esi
+; -> hit char: eax
 bresenham:
   push r8
   push r9
@@ -609,9 +647,10 @@ bresenham:
   push r11
   push r12
   push r13
-  sub rsp, 10 * 2
+  push r14
 
   mov r13d, esi
+  xor r14d, r14d
 
   mov esi, 1
   mov edi, 18
@@ -670,17 +709,19 @@ bresenham:
   add ebp, edi
 
   xor r10d, r10d
-  ; TODO: there is no point in using the initial point
-: mov [rsp+r10*2], al
-  mov [rsp+r10*2+1], bl
-  inc r10d
+: inc r10d
   ; don't continue if the tile is a wall
   lea r11, [tilemap]
   imul r12d, ebx, 20
   add r11, rax
   add r11, r12
   movzx r12d, m8 [r11]
-  cmp m8 [r11], 3
+  cmp r12b, 3
+  je .done
+  ; hit char?
+  and r12b, 0x70
+  cmp r12b, 0x10
+  sete r14b
   je .done
   ; compute e2
   mov r11d, ebp
@@ -706,16 +747,8 @@ bresenham:
   jmp <<<
 
 .done:
-  ; draw points
-  mov r11d, 1
-: movzx ebx, m8 [rsp+r11*2]
-  movzx ecx, m8 [rsp+r11*2+1]
-  call draw_point
-  inc r11d
-  cmp r11d, r10d
-  jl <
-
-  add rsp, 10 * 2
+  mov eax, r14d
+  pop r14
   pop r13
   pop r12
   pop r11
@@ -724,32 +757,121 @@ bresenham:
   pop r8
   ret
 
-; x: ebx, y: ecx
+; from x: eax, from y: ebx
+; -> eax
+char_visible:
+  push r8
+  push r9
+  push r10
+
+  mov r8d, eax
+  mov r9d, ebx
+
+  lea rsi, [entities]
+  movzx ecx, m8 [rsi+4+0] ; char x
+  movzx edx, m8 [rsi+4+1] ; char y
+
+  ; abs(x1 - x0)
+  sub ecx, eax
+  mov esi, ecx
+  sar esi, 31
+  add ecx, esi
+  xor ecx, esi
+
+  ; abs(y1 - y0)
+  sub edx, ebx
+  mov edi, edx
+  sar edi, 31
+  add edx, edi
+  xor edx, edi
+
+  xor eax, eax
+  add ecx, edx
+  cmp ecx, 5
+  jg .done
+
+  mov r10d, -5
+: mov eax, r8d
+  mov ebx, r9d
+  mov ecx, eax
+  mov edx, ebx
+  add ecx, r10d
+  add edx, 5
+  mov esi, 5
+  call bresenham
+  test eax, eax
+  jnz .done
+
+  mov eax, r8d
+  mov ebx, r9d
+  mov ecx, eax
+  mov edx, ebx
+  add ecx, r10d
+  sub edx, 5
+  mov esi, 5
+  call bresenham
+  test eax, eax
+  jnz .done
+
+  mov eax, r8d
+  mov ebx, r9d
+  mov ecx, eax
+  mov edx, ebx
+  add ecx, 5
+  add edx, r10d
+  mov esi, 5
+  call bresenham
+  test eax, eax
+  jnz .done
+
+  mov eax, r8d
+  mov ebx, r9d
+  mov ecx, eax
+  mov edx, ebx
+  sub ecx, 5
+  add edx, r10d
+  mov esi, 5
+  call bresenham
+  test eax, eax
+  jnz .done
+
+  inc r10d
+  cmp r10d, 5
+  jle <
+
+  xor eax, eax
+
+.done:
+  pop r10
+  pop r9
+  pop r8
+  ret
+
+; x: ebx, y: ecx, color: edx
 draw_point:
   lea rax, [screen]
   imul ebx, ebx, 24 * 4
   imul ecx, ecx, 24 * 4 * 480
-  add ebx, 8 * 4
-  add ecx, 8 * 4 * 480
+  ; add ebx, 8 * 4
+  ; add ecx, 8 * 4 * 480
   add rax, rbx
   add rax, rcx
-  mov edi, 0xff00ab
-  mov m32 [rax], edi
-  mov m32 [rax+4], edi
-  mov m32 [rax+8], edi
-  mov m32 [rax+12], edi
-  mov m32 [rax+480*4], edi
-  mov m32 [rax+480*4+4], edi
-  mov m32 [rax+480*4+8], edi
-  mov m32 [rax+480*4+12], edi
-  mov m32 [rax+480*2*4], edi
-  mov m32 [rax+480*2*4+4], edi
-  mov m32 [rax+480*2*4+8], edi
-  mov m32 [rax+480*2*4+12], edi
-  mov m32 [rax+480*3*4], edi
-  mov m32 [rax+480*3*4+4], edi
-  mov m32 [rax+480*3*4+8], edi
-  mov m32 [rax+480*3*4+12], edi
+  mov m32 [rax], edx
+  mov m32 [rax+4], edx
+  mov m32 [rax+8], edx
+  mov m32 [rax+12], edx
+  mov m32 [rax+480*4], edx
+  mov m32 [rax+480*4+4], edx
+  mov m32 [rax+480*4+8], edx
+  mov m32 [rax+480*4+12], edx
+  mov m32 [rax+480*2*4], edx
+  mov m32 [rax+480*2*4+4], edx
+  mov m32 [rax+480*2*4+8], edx
+  mov m32 [rax+480*2*4+12], edx
+  mov m32 [rax+480*3*4], edx
+  mov m32 [rax+480*3*4+4], edx
+  mov m32 [rax+480*3*4+8], edx
+  mov m32 [rax+480*3*4+12], edx
   ret
 
 clear_map:
@@ -858,7 +980,7 @@ generate_map:
 
   ; randomly place walls
   mov r10d, 1000
-  mov r9d, 10
+  mov r9d, 15
   mov eax, 18
 : test r10d, r10d
   jz .done
@@ -893,7 +1015,7 @@ place_entities:
   push r9
   push r10
 
-  lea r8, [entities+3]
+  lea r8, [entities+4]
   mov r9d, 1
 
   ; generate random coords
@@ -922,7 +1044,7 @@ place_entities:
 
   mov [r8+0], r10b
   mov [r8+1], al
-  add r8, 3
+  add r8, 4
   inc r9d
   cmp r9d, 5
   jl <
@@ -1268,8 +1390,8 @@ intern_atom_wm_delete_window:
 
 tiles:
   .i16 0x2000 0x1048 0x0002 0x9480 0x0100 0x4000 0x4020 0x9100 0x2004
-  .i16 0xf000 0xf7ff 0x77ef 0x09d9 0x0000 0x0000 0x0000 0x0000 0x0000
-  .i16 0xf000 0xff7f 0x7ff7 0xf000 0xff7f 0x7ff7 0xf7ff 0xff7f 0x7ff7
+  .i16 0xf000 0xf77f 0x77e7 0x01d9 0x0000 0x0000 0x0000 0x0000 0x0000
+  .i16 0xf000 0xd97f 0x7fb6 0xd6df 0xff4e 0x0007 0xd7ff 0xba55 0x5552
   .i16 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0004 0x0000
 
 sprites:
@@ -1279,17 +1401,18 @@ sprites:
 rng_state: .i32 0
 sockfd: .i32 0
 
-; each entity has x, y and a sprite
+; each entity has x, y, sprite and 'sees char' flag
 entities:
-  .i8 0 0 0 ; invalid entity
-  .i8 0 0 0
-  .i8 0 0 1
-  .i8 0 0 1
-  .i8 0 0 1
+  .i8 0 0 0 0; invalid entity
+  .i8 0 0 0 0
+  .i8 0 0 1 0
+  .i8 0 0 1 0
+  .i8 0 0 1 0
 
-; tile bits: WEEE--SS
+; tile bits: WEEER-SS
 ; W = walkable
 ; E = entity id
+; R = needs to be redrawn
 ; S = sprite
 tilemap:
   .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0

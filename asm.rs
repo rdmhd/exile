@@ -1,5 +1,6 @@
 #![feature(generic_arg_infer)]
 #![feature(char_indices_offset)]
+#![feature(map_try_insert)]
 
 use std::{
     collections::HashMap, fmt::Display, io::Write, mem::transmute, os::unix::fs::OpenOptionsExt,
@@ -112,6 +113,7 @@ struct Context<'a> {
     curr_label: &'a str,
     anon_labels: Vec<i64>,
     anon_patches: Vec<AnonPatch>,
+    constants: HashMap<&'a str, i64>,
 }
 
 struct Output<'a> {
@@ -413,6 +415,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
         curr_label: "",
         anon_labels: Vec::new(),
         anon_patches: Vec::new(),
+        constants: HashMap::new(),
     };
 
     loop {
@@ -434,7 +437,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
                     continue;
                 } else {
                     skip_whitespace(&mut cur);
-                    asm_directive(ident, at, &mut cur, ctx.out.data)?;
+                    asm_directive(ident, at, &mut cur, input, ctx.out.data, &mut ctx.constants)?;
                 }
             } else {
                 return error_at(cur.off, "expected directive name");
@@ -798,13 +801,25 @@ fn asm_instruction<'a>(
     let mut arg2 = Arg::None;
     let mut arg3 = Arg::None;
 
-    if let Some(arg) = match_argument(cur, input, ctx.curr_label, &ctx.anon_labels)? {
+    if let Some(arg) = match_argument(
+        cur,
+        input,
+        ctx.curr_label,
+        &ctx.anon_labels,
+        &mut ctx.constants,
+    )? {
         arg1 = arg;
         skip_whitespace(cur);
 
         if match_char(',', cur) {
             skip_whitespace(cur);
-            if let Some(arg) = match_argument(cur, input, ctx.curr_label, &ctx.anon_labels)? {
+            if let Some(arg) = match_argument(
+                cur,
+                input,
+                ctx.curr_label,
+                &ctx.anon_labels,
+                &mut ctx.constants,
+            )? {
                 arg2 = arg;
             } else {
                 return error_at(cur.off, "expected operand after ','");
@@ -812,7 +827,13 @@ fn asm_instruction<'a>(
 
             if match_char(',', cur) {
                 skip_whitespace(cur);
-                if let Some(arg) = match_argument(cur, input, ctx.curr_label, &ctx.anon_labels)? {
+                if let Some(arg) = match_argument(
+                    cur,
+                    input,
+                    ctx.curr_label,
+                    &ctx.anon_labels,
+                    &mut ctx.constants,
+                )? {
                     arg3 = arg;
                 } else {
                     return error_at(cur.off, "expected operand after ','");
@@ -864,6 +885,10 @@ fn asm_instruction<'a>(
             println!("{}", s);
         }
     } else {
+        if verbose {
+            eprintln!("?? {mnemonic} {arg1}, {arg2}, {arg3}");
+        }
+
         return error_at(at, "unknown instruction");
     }
 
@@ -894,7 +919,14 @@ fn is_valid32(val: i64) -> bool {
     }
 }
 
-fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> Result<(), Error> {
+fn asm_directive<'a>(
+    name: &str,
+    at: usize,
+    cur: &mut Cursor,
+    input: &'a str,
+    out: &mut Vec<u8>,
+    constants: &mut HashMap<&'a str, i64>,
+) -> Result<(), Error> {
     match name {
         "i8" => {
             loop {
@@ -912,7 +944,7 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
                             advance(cur);
                         }
                     }
-                } else if let Some(mut int) = match_expression(cur)? {
+                } else if let Some(mut int) = match_expression(cur, input, constants)? {
                     loop {
                         if is_valid8(int) {
                             out.push(int as u8);
@@ -920,7 +952,7 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
                             return error_at(cur.off, "value doesn't fit in 16 bits");
                         }
                         skip_whitespace(cur);
-                        if let Some(x) = match_expression(cur)? {
+                        if let Some(x) = match_expression(cur, input, constants)? {
                             int = x;
                         } else {
                             break;
@@ -938,7 +970,7 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "i16" | "i32" | "i64" => {
-            if let Some(mut int) = match_expression(cur)? {
+            if let Some(mut int) = match_expression(cur, input, constants)? {
                 loop {
                     match name {
                         "i16" => {
@@ -962,7 +994,7 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
                         _ => unreachable!(),
                     }
                     skip_whitespace(cur);
-                    if let Some(x) = match_expression(cur)? {
+                    if let Some(x) = match_expression(cur, input, constants)? {
                         int = x;
                     } else {
                         break;
@@ -973,11 +1005,26 @@ fn asm_directive(name: &str, at: usize, cur: &mut Cursor, out: &mut Vec<u8>) -> 
             }
         }
         "res" => {
-            if let Some(int) = match_expression(cur)? {
+            if let Some(int) = match_expression(cur, input, constants)? {
                 let len = out.len() + int as usize;
                 out.resize(len, 0);
             } else {
                 return error_at(cur.off, "expected number of bytes to reserve");
+            }
+        }
+        "def" => {
+            skip_whitespace(cur);
+            if let Some((ident, at)) = match_identifier(cur, input) {
+                skip_whitespace(cur);
+                if let Some(int) = match_expression(cur, input, constants)? {
+                    if constants.try_insert(ident, int).is_err() {
+                        return error_at(at, "constant already defined");
+                    }
+                } else {
+                    return error_at(cur.off, "expected constant value");
+                }
+            } else {
+                return error_at(cur.off, "expected constant name");
             }
         }
         _ => return error_at(at, "unknown directive"),
@@ -1102,15 +1149,21 @@ fn parse_label<'a>(
     }
 }
 
-fn match_primary(cur: &mut Cursor) -> Result<Option<i64>, Error> {
+fn match_primary(
+    cur: &mut Cursor,
+    input: &str,
+    constants: &HashMap<&str, i64>,
+) -> Result<Option<i64>, Error> {
     if let Some((int, _)) = match_integer(cur)? {
         return Ok(Some(int));
+    } else if let Some(int) = match_constant(cur, input, constants)? {
+        return Ok(Some(int));
     } else if match_char('-', cur) {
-        if let Some(int) = match_primary(cur)? {
+        if let Some(int) = match_primary(cur, input, constants)? {
             return Ok(Some(-int));
         }
     } else if match_char('(', cur) {
-        if let Some(int) = match_expression(cur)? {
+        if let Some(int) = match_expression(cur, input, constants)? {
             if match_char(')', cur) {
                 return Ok(Some(int));
             }
@@ -1132,9 +1185,16 @@ fn match_operator(char: char) -> Option<i32> {
     }
 }
 
-fn parse_expression(mut lhs: i64, mut op: char, prec: i32, cur: &mut Cursor) -> Result<i64, Error> {
+fn parse_expression(
+    mut lhs: i64,
+    mut op: char,
+    prec: i32,
+    cur: &mut Cursor,
+    input: &str,
+    constants: &HashMap<&str, i64>,
+) -> Result<i64, Error> {
     loop {
-        let mut rhs = if let Some(int) = match_primary(cur)? {
+        let mut rhs = if let Some(int) = match_primary(cur, input, constants)? {
             int
         } else {
             return error_at(cur.off, "unexpected end of expression");
@@ -1147,7 +1207,7 @@ fn parse_expression(mut lhs: i64, mut op: char, prec: i32, cur: &mut Cursor) -> 
                 let op = cur.char;
                 advance(cur);
                 skip_whitespace(cur);
-                rhs = parse_expression(rhs, op, prec2, cur)?;
+                rhs = parse_expression(rhs, op, prec2, cur, input, constants)?;
             }
         }
 
@@ -1174,8 +1234,28 @@ fn parse_expression(mut lhs: i64, mut op: char, prec: i32, cur: &mut Cursor) -> 
     Ok(lhs)
 }
 
-fn match_expression(cur: &mut Cursor) -> Result<Option<i64>, Error> {
-    let mut lhs = if let Some(int) = match_primary(cur)? {
+fn match_constant(
+    cur: &mut Cursor,
+    input: &str,
+    map: &HashMap<&str, i64>,
+) -> Result<Option<i64>, Error> {
+    if let Some((ident, at)) = match_identifier(cur, input) {
+        if let Some(&int) = map.get(ident) {
+            Ok(Some(int))
+        } else {
+            error_at(at, "undefined constant")
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+fn match_expression(
+    cur: &mut Cursor,
+    input: &str,
+    constants: &HashMap<&str, i64>,
+) -> Result<Option<i64>, Error> {
+    let mut lhs = if let Some(int) = match_primary(cur, input, constants)? {
         int
     } else {
         return Ok(None);
@@ -1187,10 +1267,28 @@ fn match_expression(cur: &mut Cursor) -> Result<Option<i64>, Error> {
         let op = cur.char;
         advance(cur);
         skip_whitespace(cur);
-        lhs = parse_expression(lhs, op, prec, cur)?;
+        lhs = parse_expression(lhs, op, prec, cur, input, constants)?;
     }
 
     Ok(Some(lhs))
+}
+
+fn expect_expression(
+    mut lhs: i64,
+    cur: &mut Cursor,
+    input: &str,
+    constants: &HashMap<&str, i64>,
+) -> Result<i64, Error> {
+    skip_whitespace(cur);
+
+    while let Some(prec) = match_operator(cur.char) {
+        let op = cur.char;
+        advance(cur);
+        skip_whitespace(cur);
+        lhs = parse_expression(lhs, op, prec, cur, input, constants)?;
+    }
+
+    Ok(lhs)
 }
 
 fn match_argument<'a>(
@@ -1198,6 +1296,7 @@ fn match_argument<'a>(
     input: &'a str,
     label: &'a str,
     anon_labels: &[i64],
+    constants: &HashMap<&str, i64>,
 ) -> Result<Option<Arg<'a>>, Error> {
     if let Some((ident, at)) = match_identifier(cur, input) {
         match ident {
@@ -1206,7 +1305,7 @@ fn match_argument<'a>(
                 if !match_char('[', cur) {
                     return error_at(cur.off, "expected address after operand size");
                 } else {
-                    let addr = expect_address(cur, input)?;
+                    let addr = expect_address(cur, input, constants)?;
                     let arg = match ident {
                         "m8" => Arg::Mem8(addr),
                         "m16" => Arg::Mem16(addr),
@@ -1220,6 +1319,9 @@ fn match_argument<'a>(
             _ => {
                 let arg = if let Some(reg) = parse_register(ident) {
                     reg
+                } else if let Some(&int) = constants.get(ident) {
+                    let int = expect_expression(int, cur, input, constants)?;
+                    Arg::Imm(int)
                 } else {
                     Arg::Label(parse_label((ident, at), cur, input)?)
                 };
@@ -1237,10 +1339,10 @@ fn match_argument<'a>(
         } else {
             error_at(cur.off, "expected label name")
         }
-    } else if let Some(imm) = match_expression(cur)? {
+    } else if let Some(imm) = match_expression(cur, input, constants)? {
         Ok(Some(Arg::Imm(imm)))
     } else if match_char('[', cur) {
-        Ok(Some(Arg::Mem(expect_address(cur, input)?)))
+        Ok(Some(Arg::Mem(expect_address(cur, input, constants)?)))
     } else if match_char('<', cur) {
         let at = cur.off - 1;
         let mut delta = 1;
@@ -1269,7 +1371,11 @@ fn match_argument<'a>(
     }
 }
 
-fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Error> {
+fn expect_address<'a>(
+    cur: &mut Cursor,
+    input: &'a str,
+    constants: &HashMap<&str, i64>,
+) -> Result<Addr<'a>, Error> {
     let mut label = None;
     let mut base = None;
     let mut index = None;
@@ -1329,7 +1435,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
             } else {
                 label = Some(parse_label((ident, at), cur, input)?);
             }
-        } else if let Some(int) = match_expression(cur)? {
+        } else if let Some(int) = match_expression(cur, input, constants)? {
             disp += int as i64; // TODO: check for overflow
         } else {
             return error_at(cur.off, "expected address component");
@@ -1339,7 +1445,7 @@ fn expect_address<'a>(cur: &mut Cursor, input: &'a str) -> Result<Addr<'a>, Erro
 
         if match_char('-', cur) {
             skip_whitespace(cur);
-            if let Some(int) = match_expression(cur)? {
+            if let Some(int) = match_expression(cur, input, constants)? {
                 disp -= int as i64; // TODO: check for overflow
             } else {
                 return error_at(cur.off, "expected expression");

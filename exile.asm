@@ -1,3 +1,20 @@
+.def map_width  20
+.def map_height 15
+.def tile_size  24
+
+.def screen_width  map_width * tile_size
+.def screen_height map_height * tile_size
+
+.def tile_walkable 0x80
+.def tile_entity   0x70
+.def tile_redraw   0x08
+.def tile_sprite   0x03
+
+.def max_rooms 8
+.def max_walls 15
+
+.def fov_distance 5
+
 read_xauthority_cookie:
   mov rsi, [rsp]          ; get number of command line args
   lea rsi, [rsp+rsi*8+16] ; get address of first environment var
@@ -235,7 +252,7 @@ refresh_screen:
   mov edi, [rax]
   mov eax, 1
   lea rsi, [put_image]
-  mov edx, (7 + 480 * 360) * 4
+  mov edx, (7 + screen_width * screen_height) * 4
   syscall
   jmp main_loop
 
@@ -311,8 +328,8 @@ draw_sprite:
   push r9
 
   lea rdx, [screen]
-  imul eax, eax, 24 * 4
-  imul ebx, ebx, 24 * 4 * 480
+  imul eax, eax, tile_size * 4
+  imul ebx, ebx, tile_size * screen_width * 4
   add rdx, rax
   add rdx, rbx
 
@@ -326,7 +343,7 @@ draw_sprite:
 : mov eax, [rcx+r8*4]
   mov ebx, 16
 : mov ebp, eax
-  and ebp, 0x3
+  and ebp, tile_sprite
   jz >
   mov esi, 0xffffff
   mov edi, 0x000000
@@ -339,7 +356,7 @@ draw_sprite:
 : inc r9d
   cmp r9d, 12
   jne >
-  add rdx, (480 * 2 - 24) * 4
+  add rdx, (screen_width * 2 - tile_size) * 4
   xor r9d, r9d
 : add rdx, 8
   shr eax, 2
@@ -398,7 +415,7 @@ draw_tile:
   add rdi, 8
   dec edx
   jnz >
-  add rdi, (480 * 2 - 24) * 4 ; move down 2 lines in the screen buffer
+  add rdi, (screen_width * 2 - tile_size) * 4 ; move down 2 lines in the screen buffer
   mov edx, 12
 : shr eax, 1
   dec ebx
@@ -418,17 +435,17 @@ draw_tilemap:
 : xor r9d, r9d ; x counter
 : movzx eax, m8 [r8]
   inc r8
-  and eax, 0x3
+  and eax, tile_sprite
   jz >
   mov ebx, r9d
   mov ecx, r10d
   call draw_tile
 : inc r9d
-  cmp r9d, 20
-  jne <<
+  cmp r9d, map_width
+  jl <<
   inc r10d
-  cmp r10d, 15
-  jne <<<
+  cmp r10d, map_height
+  jl <<<
   pop r10
   pop r9
   pop r8
@@ -443,20 +460,20 @@ redraw_tilemap:
   xor r10d, r10d ; y counter
 : xor r9d, r9d ; x counter
 : movzx r11d, m8 [r8]
-  test r11b, 0x8 ; is the 'redraw' flag set?
+  test r11b, tile_redraw
   jz >
   mov eax, r11d
-  and eax, 0x3
+  and eax, tile_sprite
   mov ebx, r9d
   mov ecx, r10d
   call draw_tile
-  test r11b, 0x70 ; is there entity on the tile?
+  test r11b, tile_entity
   jz >
   mov eax, r11d
+  and eax, tile_entity
   shr eax, 4
-  and eax, 0x7
   call draw_entity
-  and m8 [r8], 0xf7 ; remove 'redraw' flag
+  and m8 [r8], 0xf7 ; remove 'redraw' flag ; TODO: ~tile_redraw
 : inc r8
   inc r9d
   cmp r9d, 20
@@ -537,17 +554,16 @@ move_entity:
   add ecx, r9d
 
   ; get offset into the tilemap for the new coords
-  imul edi, ecx, 20
+  imul edi, ecx, map_width
   add edi, ebx
 
-  ; check if the tile is walkable
-  test m8 [rsi+rdi], 0x80
+  test m8 [rsi+rdi], tile_walkable
   jz >
 
   ; check if the tile is occupied by another entity
   ; TODO: this is probably only useful to char movement
   movzx eax, m8 [rsi+rdi]
-  and eax, 0x70
+  and eax, tile_entity
   shr eax, 4
   test eax, eax
   jnz >
@@ -560,18 +576,16 @@ move_entity:
   ; add entity id to tile
   shl edx, 4
   or eax, edx
-  ; set 'redraw' flag on the tile
-  or al, 0x8
+  or al, tile_redraw
   mov [rsi+rdi], al
 
   ; get offset into the tilemap for the old coords
-  imul edi, r9d, 20
+  imul edi, r9d, map_width
   add edi, r8d
   movzx eax, m8 [rsi+rdi]
   ; remove entity id from tile
-  and al, 0x8f
-  ; set 'redraw' flag on the tile
-  or al, 0x8
+  and al, 0x8f ; TODO: ~tile_entity
+  or al, tile_redraw
   mov [rsi+rdi], al
 
   mov eax, 0xff
@@ -598,11 +612,11 @@ simulate_entities:
 
   movzx eax, m8 [r9+r8*4+0]
   movzx ebx, m8 [r9+r8*4+1]
-  imul ebx, ebx, 20
+  imul ebx, ebx, map_width
   lea rcx, [tilemap]
   add rcx, rax
   add rcx, rbx
-  or m8 [rcx], 0x8
+  or m8 [rcx], tile_redraw
 
 : inc r8d
   cmp r8d, 5
@@ -654,7 +668,7 @@ bresenham:
   xor r14d, r14d
 
   mov esi, 1
-  mov edi, 18
+  mov edi, map_width - 2
   ; clamp x0 to map bounds
   cmp eax, esi
   cmovl eax, esi
@@ -667,7 +681,7 @@ bresenham:
   cmovg ecx, edi
 
   mov esi, 1
-  mov edi, 13
+  mov edi, map_height - 2
   ; clamp y0 to map bounds
   cmp ebx, esi
   cmovl ebx, esi
@@ -713,14 +727,14 @@ bresenham:
 : inc r10d
   ; don't continue if the tile is a wall
   lea r11, [tilemap]
-  imul r12d, ebx, 20
+  imul r12d, ebx, map_width
   add r11, rax
   add r11, r12
   movzx r12d, m8 [r11]
   cmp r12b, 3
   je .done
   ; hit char?
-  and r12b, 0x70
+  and r12b, tile_entity
   cmp r12b, 0x10
   sete r14b
   je .done
@@ -788,17 +802,17 @@ char_visible:
 
   xor eax, eax
   add ecx, edx
-  cmp ecx, 5
+  cmp ecx, fov_distance
   jg .done
 
-  mov r10d, -5
+  mov r10d, -fov_distance
 : mov eax, r8d
   mov ebx, r9d
   mov ecx, eax
   mov edx, ebx
   add ecx, r10d
-  add edx, 5
-  mov esi, 5
+  add edx, fov_distance
+  mov esi, fov_distance
   call bresenham
   test eax, eax
   jnz .done
@@ -808,8 +822,8 @@ char_visible:
   mov ecx, eax
   mov edx, ebx
   add ecx, r10d
-  sub edx, 5
-  mov esi, 5
+  sub edx, fov_distance
+  mov esi, fov_distance
   call bresenham
   test eax, eax
   jnz .done
@@ -818,9 +832,9 @@ char_visible:
   mov ebx, r9d
   mov ecx, eax
   mov edx, ebx
-  add ecx, 5
+  add ecx, fov_distance
   add edx, r10d
-  mov esi, 5
+  mov esi, fov_distance
   call bresenham
   test eax, eax
   jnz .done
@@ -829,15 +843,15 @@ char_visible:
   mov ebx, r9d
   mov ecx, eax
   mov edx, ebx
-  sub ecx, 5
+  sub ecx, fov_distance
   add edx, r10d
-  mov esi, 5
+  mov esi, fov_distance
   call bresenham
   test eax, eax
   jnz .done
 
   inc r10d
-  cmp r10d, 5
+  cmp r10d, fov_distance
   jle <
 
   xor eax, eax
@@ -851,10 +865,8 @@ char_visible:
 ; x: ebx, y: ecx, color: edx
 draw_point:
   lea rax, [screen]
-  imul ebx, ebx, 24 * 4
-  imul ecx, ecx, 24 * 4 * 480
-  ; add ebx, 8 * 4
-  ; add ecx, 8 * 4 * 480
+  imul ebx, ebx, tile_size * 4
+  imul ecx, ecx, tile_size * 4 * screen_width
   add rax, rbx
   add rax, rcx
   mov m32 [rax], edx
@@ -880,7 +892,7 @@ clear_map:
   xor ebx, ebx
 : mov m32 [rax+rbx*4], 0
   inc ebx
-  cmp ebx, 75
+  cmp ebx, map_width * map_height / 4
   jl <
   ret
 
@@ -888,7 +900,7 @@ generate_map:
   push r8
   push r9
   push r10
-  sub rsp, 32 ; max rooms * 4
+  sub rsp, max_rooms * 4
 
   xor r8d, r8d ; room count
 
@@ -908,7 +920,7 @@ generate_map:
   test eax, eax
   jnz .next_attempt
   inc r8d
-  cmp r8d, 8
+  cmp r8d, max_rooms
   je .rooms_generated
 .next_attempt:
   dec r9d
@@ -963,15 +975,15 @@ generate_map:
   call place_entities
 
   ; postprocess
-  mov r8d, 20
+  mov r8d, map_width
   lea r9, [tilemap]
-  add r9, 20
+  add r9, map_width
 .next_tile:
   lea rax, [r9+r8]
   cmp m8 [rax], 0
   jne .no_change
-  sub rax, 20
-  test m8 [rax], 0x80
+  sub rax, map_width
+  test m8 [rax], tile_walkable
   jz .no_change
   mov m8 [r9+r8], 2
 .no_change:
@@ -981,17 +993,17 @@ generate_map:
 
   ; randomly place walls
   mov r10d, 1000
-  mov r9d, 15
-  mov eax, 18
+  mov r9d, max_walls
 : test r10d, r10d
   jz .done
+  mov eax, map_width - 2
   call random_int
   inc eax
   mov r8d, eax
-  mov eax, 12
+  mov eax, map_height - 3
   call random_int
   inc eax
-  imul eax, eax, 20
+  imul eax, eax, map_width
   add eax, r8d
   lea rbx, [tilemap]
   add rbx, rax
@@ -1020,22 +1032,23 @@ place_entities:
   mov r9d, 1
 
   ; generate random coords
-: mov eax, 18
+: mov eax, map_width - 2
   call random_int
   inc eax
   mov r10d, eax
-  mov eax, 13
+  mov eax, map_height - 2
   call random_int
   inc eax
 
   lea rbx, [tilemap]
-  imul ecx, eax, 20
+  imul ecx, eax, map_width
   add ecx, r10d
-  ; check if tile is walkable
-  test m8 [rbx+rcx], 0x80
+
+  test m8 [rbx+rcx], tile_walkable
   jz <
+
   ; check if tile already has an entity
-  test m8 [rbx+rcx], 0x70
+  test m8 [rbx+rcx], tile_entity
   jnz <
 
   ; add entity id to tile
@@ -1075,13 +1088,13 @@ random_room:
   add eax, 1
   mov r11d, eax
   ; (r8d) randomly pick x0
-  mov eax, 18
+  mov eax, map_width - 2
   sub eax, r10d
   call random_int
   inc eax
   mov r8d, eax
   ; (r9d) randomly pick y0
-  mov eax, 13
+  mov eax, map_height - 2
   sub eax, r11d
   call random_int
   inc eax
@@ -1177,14 +1190,14 @@ place_room:
   jle >
   xchg ebx, edx
 : lea rsi, [tilemap]
-  imul edi, ebx, 20
+  imul edi, ebx, map_width
   add rsi, rdi
 : mov edi, eax
 : mov m8 [rsi+rdi], 0x81
   inc edi
   cmp edi, ecx
   jle <
-  add rsi, 20
+  add rsi, map_width
   inc ebx
   cmp ebx, edx
   jle <<
@@ -1232,7 +1245,7 @@ place_connection:
 place_connection_horz:
   ; (rsi) compute initial offset into the tilemap
   lea rsi, [tilemap]
-  imul ecx, ecx, 20
+  imul ecx, ecx, map_width
   add rsi, rcx
   ; (edx) compute loop delta
   mov edx, 1
@@ -1251,8 +1264,8 @@ place_connection_vert:
   ; compute p1, p2
   lea rsi, [tilemap]
   add rsi, rcx
-  imul rax, rax, 20
-  imul rbx, rbx, 20
+  imul rax, rax, map_width
+  imul rbx, rbx, map_width
   add rax, rsi
   add rbx, rsi
   ; if p1 > p2, swap them
@@ -1260,7 +1273,7 @@ place_connection_vert:
   jle >
   xchg rax, rbx
 : mov m8 [rax], 0x81
-  add rax, 20
+  add rax, map_width
   cmp rax, rbx
   jle <
   ret
@@ -1319,7 +1332,7 @@ create_window:
   .i32 0           ; window id
 .parent:
   .i32 0           ; parent id
-  .i16 0 0 480 360 ; x, y, width, height
+  .i16 0 0 screen_width screen_height ; x, y, width, height
   .i16 0 1         ; border, class
   .i32 0           ; visual
   .i32 0x00000800  ; event-mask
@@ -1415,33 +1428,18 @@ entities:
 ; E = entity id
 ; R = needs to be redrawn
 ; S = sprite
-tilemap:
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+tilemap: .res screen_width * screen_height
 
 put_image:
   .i8 72             ; opcode
   .i8 2              ; format (ZPixmap)
   .i16 0             ; length (0 to allow big request)
-  .i32 7 + 480 * 360 ; actual length
+  .i32 7 + screen_width * screen_height ; actual length
 .window:
   .i32 0             ; window id
 .gc:
   .i32 0             ; gc id
-  .i16 480 360 0 0   ; width, height,x, y
+  .i16 screen_width screen_height 0 0   ; width, height,x, y
   .i8 0 24 0 0       ; left-pad, depth
 screen:
-  .res 480 * 360 * 4
+  .res screen_width * screen_height * 4

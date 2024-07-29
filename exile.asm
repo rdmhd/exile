@@ -506,50 +506,51 @@ clear_screen:
 move_char:
   mov edx, 1
   call move_entity
-  test ebx, ebx
-  jz >
-  ; TODO: attack here
-  jmp >>
-: test eax, eax
+  test eax, eax
   jz >>
+  cmp eax, 0xff
+  je >
+  ; TODO: attack here, entity id is in eax
 : call simulate_entities
   call redraw_tilemap
   mov eax, 1
 : ret
 
 ; delta x: ebx, delta y: ecx, id: edx
-; -> entity moved: eax, blocking entity: ebx
+; -> eax, 0 if could not move, 0xff if moved, blocking entity id othwerwise
 move_entity:
   push r8
   push r9
   push r10
+
   xor eax, eax
-  ; store original coords for later use
-  imul esi, edx, 4
+  lea rsi, [tilemap]
+
+  ; load original coords
   lea r10, [entities]
-  add r10, rsi
+  lea r10, [r10+rdx*4]
   movzx r8d, m8 [r10+0]
   movzx r9d, m8 [r10+1]
+
   ; compute new coords
   add ebx, r8d
   add ecx, r9d
+
   ; get offset into the tilemap for the new coords
   imul edi, ecx, 20
   add edi, ebx
+
   ; check if the tile is walkable
-  lea rsi, [tilemap]
   test m8 [rsi+rdi], 0x80
   jz >
 
   ; check if the tile is occupied by another entity
   ; TODO: this is probably only useful to char movement
-  mov ebp, ebx
-  movzx ebx, m8 [rsi+rdi]
-  and ebx, 0x70
-  shr ebx, 4
-  test ebx, ebx
+  movzx eax, m8 [rsi+rdi]
+  and eax, 0x70
+  shr eax, 4
+  test eax, eax
   jnz >
-  mov ebx, ebp
 
   ; store new entity coords
   mov [r10+0], bl
@@ -573,7 +574,7 @@ move_entity:
   or al, 0x8
   mov [rsi+rdi], al
 
-  mov eax, 1
+  mov eax, 0xff
 : pop r10
   pop r9
   pop r8

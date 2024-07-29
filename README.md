@@ -5,4 +5,4 @@ A game written for the "RoguelikeDev Does The Complete Roguelike Tutorial" event
 
 **How to build:** ./build.sh
 
-![exile2](https://github.com/user-attachments/assets/ee1757e6-ac8d-44e1-ac8e-71198cf6c958)
+![exile](https://raw.githubusercontent.com/rdmhd/exile/master/week3.gif)

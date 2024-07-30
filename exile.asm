@@ -6,13 +6,22 @@
 .def screen_height map_height * tile_size
 .def screen_pitch  screen_width*4
 
-.def tile_walkable 0x80
-.def tile_entity   0x70
-.def tile_redraw   0x08
-.def tile_sprite   0x03
+.def tm_entity_shift 3
+.def tm_walkable 0b10000000
+.def tm_opaque   0b01000000
+.def tm_entity   0b111 << tm_entity_shift
+.def tm_redraw   0b00000100
+.def tm_sprite   0b00000011
 
-.def max_rooms 10
+.def tile_ground 1
+.def tile_cliff  2
+.def tile_wall   3
+
+.def max_rooms 8
 .def max_walls 20
+
+.def room_min_dim 2
+.def room_max_dim 3
 
 .def fov_distance 5
 
@@ -344,7 +353,7 @@ draw_sprite:
 : mov eax, [rcx+r8*4]
   mov ebx, 16
 : mov ebp, eax
-  and ebp, tile_sprite
+  and ebp, tm_sprite
   jz >
   mov esi, 0xffffff
   mov edi, 0x000000
@@ -436,7 +445,7 @@ draw_tilemap:
 : xor r9d, r9d ; x counter
 : movzx eax, m8 [r8]
   inc r8
-  and eax, tile_sprite
+  and eax, tm_sprite
   jz >
   mov ebx, r9d
   mov ecx, r10d
@@ -461,20 +470,20 @@ redraw_tilemap:
   xor r10d, r10d ; y counter
 : xor r9d, r9d ; x counter
 : movzx r11d, m8 [r8]
-  test r11b, tile_redraw
+  test r11b, tm_redraw
   jz >
   mov eax, r11d
-  and eax, tile_sprite
+  and eax, tm_sprite
   mov ebx, r9d
   mov ecx, r10d
   call draw_tile
-  test r11b, tile_entity
+  test r11b, tm_entity
   jz >
   mov eax, r11d
-  and eax, tile_entity
-  shr eax, 4
+  and eax, tm_entity
+  shr eax, tm_entity_shift
   call draw_entity
-  and m8 [r8], 0xf7 ; remove 'redraw' flag ; TODO: ~tile_redraw
+  and m8 [r8], ~tm_redraw
 : inc r8
   inc r9d
   cmp r9d, map_width
@@ -558,14 +567,14 @@ move_entity:
   imul edi, ecx, map_width
   add edi, ebx
 
-  test m8 [rsi+rdi], tile_walkable
+  test m8 [rsi+rdi], tm_walkable
   jz >
 
   ; check if the tile is occupied by another entity
   ; TODO: this is probably only useful to char movement
   movzx eax, m8 [rsi+rdi]
-  and eax, tile_entity
-  shr eax, 4
+  and eax, tm_entity
+  shr eax, tm_entity_shift
   test eax, eax
   jnz >
 
@@ -575,9 +584,9 @@ move_entity:
 
   movzx eax, m8 [rsi+rdi]
   ; add entity id to tile
-  shl edx, 4
+  shl edx, tm_entity_shift
   or eax, edx
-  or al, tile_redraw
+  or al, tm_redraw
   mov [rsi+rdi], al
 
   ; get offset into the tilemap for the old coords
@@ -585,8 +594,8 @@ move_entity:
   add edi, r8d
   movzx eax, m8 [rsi+rdi]
   ; remove entity id from tile
-  and al, 0x8f ; TODO: ~tile_entity
-  or al, tile_redraw
+  and al, ~tm_entity
+  or al, tm_redraw
   mov [rsi+rdi], al
 
   mov eax, 0xff
@@ -617,7 +626,7 @@ simulate_entities:
   lea rcx, [tilemap]
   add rcx, rax
   add rcx, rbx
-  or m8 [rcx], tile_redraw
+  or m8 [rcx], tm_redraw
 
 : inc r8d
   cmp r8d, 5
@@ -628,7 +637,8 @@ simulate_entities:
 
 ; entity id: ebx
 move_randomly:
-  mov eax, 4
+  xor eax, eax
+  mov ebx, 4
   call random_int
   cmp eax, 0
   jne >
@@ -732,11 +742,11 @@ bresenham:
   add r11, rax
   add r11, r12
   movzx r12d, m8 [r11]
-  cmp r12b, 3
-  je .done
+  test r12b, tm_opaque
+  jnz .done
   ; hit char?
-  and r12b, tile_entity
-  cmp r12b, 0x10
+  and r12b, tm_entity
+  cmp r12b, 1 << tm_entity_shift
   sete r14b
   je .done
   ; compute e2
@@ -983,9 +993,9 @@ generate_map:
   lea rax, [r9+r8]
   cmp m8 [rax], 0
   jne >
-  test m8 [rax-map_width], tile_walkable
+  test m8 [rax-map_width], tm_walkable
   jz >
-  mov m8 [r9+r8], 2
+  mov m8 [r9+r8], tile_cliff
 : inc r8d
   cmp r8d, (map_width - 1) * map_height
   jl .next_tile
@@ -995,23 +1005,26 @@ generate_map:
   mov r9d, max_walls
 : test r10d, r10d
   jz .done
-  mov eax, map_width - 2
+
+  mov eax, 1
+  mov ebx, map_width - 2
   call random_int
-  inc eax
   mov r8d, eax
-  mov eax, map_height - 3
+
+  mov eax, 1
+  mov ebx, map_height - 2
   call random_int
-  inc eax
+
   imul eax, eax, map_width
   add eax, r8d
   lea rbx, [tilemap]
   add rbx, rax
   dec r10d
-  test m8 [rbx], 0x3
-  jnz <
-  cmp m8 [rbx+map_width], 0x81
+  cmp m8 [rbx], 0
   jne <
-  mov m8 [rbx], 3
+  test m8 [rbx+map_width], tm_walkable
+  jz <
+  mov m8 [rbx], tile_wall | tm_opaque
   dec r9d
   jnz <
 
@@ -1031,28 +1044,28 @@ place_entities:
   mov r9d, 1
 
   ; generate random coords
-: mov eax, map_width - 2
+: mov eax, 1
+  mov ebx, map_width - 2
   call random_int
-  inc eax
   mov r10d, eax
-  mov eax, map_height - 2
+  mov eax, 1
+  mov ebx, map_height - 2
   call random_int
-  inc eax
 
   lea rbx, [tilemap]
   imul ecx, eax, map_width
   add ecx, r10d
 
-  test m8 [rbx+rcx], tile_walkable
+  test m8 [rbx+rcx], tm_walkable
   jz <
 
   ; check if tile already has an entity
-  test m8 [rbx+rcx], tile_entity
+  test m8 [rbx+rcx], tm_entity
   jnz <
 
   ; add entity id to tile
   mov edx, r9d
-  shl edx, 4
+  shl edx, tm_entity_shift
   or m8 [rbx+rcx], dl
 
   mov [r8+0], r10b
@@ -1076,27 +1089,32 @@ random_room:
   push r12
   ; (r12) store room dst
   mov r12, rbx
+
   ; (r10d) randomly pick width
-  mov eax, 2
+  mov eax, room_min_dim
+  mov ebx, room_max_dim
   call random_int
-  add eax, 1
   mov r10d, eax
+
   ; (r11d) randomly pick height
-  mov eax, 2
+  mov eax, room_min_dim
+  mov ebx, room_max_dim
   call random_int
-  add eax, 1
   mov r11d, eax
+
   ; (r8d) randomly pick x0
-  mov eax, map_width - 2
-  sub eax, r10d
+  mov eax, 1
+  mov ebx, map_width - 1
+  sub ebx, r10d
   call random_int
-  inc eax
   mov r8d, eax
+
   ; (r9d) randomly pick y0
-  mov eax, map_height - 2
-  sub eax, r11d
+  mov eax, 1
+  mov ebx, map_height - 1
+  sub ebx, r11d
   call random_int
-  inc eax
+
   mov r9d, eax
   ; (r10d, r11d) compute x1, y1
   add r10d, r8d
@@ -1155,7 +1173,6 @@ room_intersects:
   ; ax0 > bx1?
   movzx edx, m8 [rbx]
   movzx edi, m8 [rcx+2]
-  inc edi
   cmp edx, edi
   jg >
   ; ax1 < bx0?
@@ -1167,7 +1184,6 @@ room_intersects:
   ; ay0 > by1?
   movzx edx, m8 [rbx+1]
   movzx edi, m8 [rcx+3]
-  inc edi
   cmp edx, edi
   jg >
   ; ay1 < by0?
@@ -1193,14 +1209,14 @@ place_room:
   imul edi, ebx, map_width
   add rsi, rdi
 : mov edi, eax
-: mov m8 [rsi+rdi], 0x81
+: mov m8 [rsi+rdi], 1 | tm_walkable
   inc edi
   cmp edi, ecx
-  jle <
+  jl <
   add rsi, map_width
   inc ebx
   cmp ebx, edx
-  jle <<
+  jl <<
   ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx
@@ -1253,7 +1269,7 @@ place_connection_horz:
   cmp eax, ebx
   cmovg edx, edi
   add ebx, edx
-: mov m8 [rsi+rax], 0x81
+: mov m8 [rsi+rax], 1 | tm_walkable
   add eax, edx
   cmp eax, ebx
   jne <
@@ -1272,7 +1288,7 @@ place_connection_vert:
   cmp rax, rbx
   jle >
   xchg rax, rbx
-: mov m8 [rax], 0x81
+: mov m8 [rax], 1 | tm_walkable
   add rax, map_width
   cmp rax, rbx
   jle <
@@ -1296,15 +1312,21 @@ xorshift32:
   mov [rng_state], eax
   ret
 
-; max: eax
+; min: eax, max: ebx
 ; -> result: eax
 random_int:
   push r8
+  push r9
   mov r8d, eax
+  mov r9d, ebx
+  sub r9d, r8d
+  inc r9d
   call xorshift32
   xor edx, edx
-  div r8d
+  div r9d
   mov eax, edx
+  add eax, r8d
+  pop r9
   pop r8
   ret
 
@@ -1423,11 +1445,6 @@ entities:
   .i8 0 0 1 0
   .i8 0 0 1 0
 
-; tile bits: WEEER-SS
-; W = walkable
-; E = entity id
-; R = needs to be redrawn
-; S = sprite
 tilemap: .res screen_width * screen_height
 
 put_image:

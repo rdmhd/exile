@@ -17,9 +17,14 @@
 .def tile_cliff  2
 .def tile_wall   3
 
-.def max_rooms 8
-.def max_walls 20
+.def entity_char    1
+.def entity_crawler 2
 
+.def max_entities 8
+.def max_enemies  3 ; must be <= max_entities - 2
+
+.def max_rooms    7 ; must be >= 2
+.def max_walls    20
 .def room_min_dim 2
 .def room_max_dim 3
 
@@ -389,6 +394,7 @@ draw_entity:
   movzx eax, m8 [r10+0]
   movzx ebx, m8 [r10+1]
   movzx ecx, m8 [r10+2]
+  dec ecx
   call draw_sprite
   cmp m8 [r10+3], 0
   je >
@@ -507,10 +513,12 @@ draw_world:
   mov r9d, 1
 
 : mov eax, r9d
+  cmp m8 [r8+r9*4+2], 0
+  je >
   call draw_entity
-  inc r9d
-  cmp r9d, 5
-  jl <
+: inc r9d
+  cmp r9d, max_entities
+  jl <<
 
   pop r10
   pop r9
@@ -609,7 +617,10 @@ simulate_entities:
   push r9
   mov r8d, 2
   lea r9, [entities]
-: mov ebx, r8d
+: cmp m8 [r9+r8*4+2], 0
+  je >
+
+  mov ebx, r8d
   call move_randomly
 
   movzx eax, m8 [r9+r8*4+0]
@@ -629,7 +640,7 @@ simulate_entities:
   or m8 [rcx], tm_redraw
 
 : inc r8d
-  cmp r8d, 5
+  cmp r8d, max_entities
   jl <<
   pop r9
   pop r8
@@ -1072,7 +1083,17 @@ place_entities:
   mov [r8+1], al
   add r8, 4
   inc r9d
-  cmp r9d, 5
+  cmp r9d, max_enemies + 2
+  jl <
+
+  ; set entity types
+  lea rax, [entities]
+  mov m8 [rax+4+2], entity_char
+
+  mov ebx, 2
+: mov m8 [rax+rbx*4+2], entity_crawler
+  inc ebx
+  cmp ebx, max_enemies + 2
   jl <
 
   pop r10
@@ -1437,13 +1458,8 @@ sprites:
 rng_state: .i32 0
 sockfd: .i32 0
 
-; each entity has x, y, sprite and 'sees char' flag
-entities:
-  .i8 0 0 0 0; invalid entity
-  .i8 0 0 0 0
-  .i8 0 0 1 0
-  .i8 0 0 1 0
-  .i8 0 0 1 0
+; each entity has x, y, type and 'sees char' flag
+entities: .res max_entities*4
 
 tilemap: .res screen_width * screen_height
 

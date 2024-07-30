@@ -156,6 +156,17 @@ struct Cursor<'a> {
     iter: CharIndices<'a>,
 }
 
+#[derive(Clone, Copy)]
+enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Shl,
+    Shr,
+    Or,
+}
+
 #[derive(Debug)]
 struct Error {
     msg: &'static str,
@@ -1040,8 +1051,7 @@ fn advance(cur: &mut Cursor) {
     (cur.off, cur.char) = cur.iter.next().unwrap_or((cur.iter.offset(), '\0'))
 }
 
-// TODO: remove if unused
-fn _peek(cur: &mut Cursor) -> char {
+fn peek(cur: &mut Cursor) -> char {
     cur.iter.clone().next().unwrap_or((0, '\0')).1
 }
 
@@ -1112,6 +1122,19 @@ fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize)>, Error> {
             } else {
                 error_at(cur.off, "expected hexadecimal digit")
             }
+        } else if cur.char == 'b' {
+            advance(cur);
+            if cur.char == '0' || cur.char == '1' {
+                let mut int = cur.char as i64 - '0' as i64;
+                advance(cur);
+                while cur.char == '0' || cur.char == '1' {
+                    int = (int << 1) | (cur.char as i64 - '0' as i64);
+                    advance(cur);
+                }
+                Ok(Some((int as i64, at)))
+            } else {
+                error_at(cur.off, "expected binary digit")
+            }
         } else {
             let mut int = 0;
             while cur.char >= '0' && cur.char <= '9' {
@@ -1162,6 +1185,10 @@ fn match_primary(
         if let Some(int) = match_primary(cur, input, constants)? {
             return Ok(Some(-int));
         }
+    } else if match_char('~', cur) {
+        if let Some(int) = match_primary(cur, input, constants)? {
+            return Ok(Some(!int));
+        }
     } else if match_char('(', cur) {
         if let Some(int) = match_expression(cur, input, constants)? {
             if match_char(')', cur) {
@@ -1175,19 +1202,54 @@ fn match_primary(
     error_at(cur.off, "unexpected end of expression")
 }
 
-fn match_operator(char: char) -> Option<i32> {
-    match char {
-        '+' => Some(0),
-        '-' => Some(0),
-        '*' => Some(1),
-        '/' => Some(1),
+fn match_operator(cur: &mut Cursor) -> Option<(BinOp, i32)> {
+    let op = match cur.char {
+        '+' => Some((BinOp::Add, 1)),
+        '-' => Some((BinOp::Sub, 1)),
+        '*' => Some((BinOp::Mul, 2)),
+        '/' => Some((BinOp::Div, 2)),
+        '<' => {
+            if peek(cur) == '<' {
+                Some((BinOp::Shl, 2))
+            } else {
+                None
+            }
+        }
+        '>' => {
+            if peek(cur) == '>' {
+                Some((BinOp::Shr, 2))
+            } else {
+                None
+            }
+        }
+        '|' => Some((BinOp::Or, 0)),
         _ => None,
+    };
+
+    op
+}
+
+fn advance_operator(op: BinOp, cur: &mut Cursor) {
+    match op {
+        BinOp::Add => advance(cur),
+        BinOp::Sub => advance(cur),
+        BinOp::Mul => advance(cur),
+        BinOp::Div => advance(cur),
+        BinOp::Shl => {
+            advance(cur);
+            advance(cur)
+        }
+        BinOp::Shr => {
+            advance(cur);
+            advance(cur)
+        }
+        BinOp::Or => advance(cur),
     }
 }
 
 fn parse_expression(
     mut lhs: i64,
-    mut op: char,
+    mut op: BinOp,
     prec: i32,
     cur: &mut Cursor,
     input: &str,
@@ -1202,27 +1264,28 @@ fn parse_expression(
 
         skip_whitespace(cur);
 
-        if let Some(prec2) = match_operator(cur.char) {
+        if let Some((op, prec2)) = match_operator(cur) {
             if prec2 > prec {
-                let op = cur.char;
-                advance(cur);
+                advance_operator(op, cur);
                 skip_whitespace(cur);
                 rhs = parse_expression(rhs, op, prec2, cur, input, constants)?;
             }
         }
 
         match op {
-            '+' => lhs += rhs,
-            '-' => lhs -= rhs,
-            '*' => lhs *= rhs,
-            '/' => lhs /= rhs,
-            _ => unreachable!(),
+            BinOp::Add => lhs += rhs,
+            BinOp::Sub => lhs -= rhs,
+            BinOp::Mul => lhs *= rhs,
+            BinOp::Div => lhs /= rhs,
+            BinOp::Shl => lhs <<= rhs,
+            BinOp::Shr => lhs >>= rhs,
+            BinOp::Or => lhs |= rhs,
         };
 
-        if let Some(prec2) = match_operator(cur.char) {
+        if let Some((op2, prec2)) = match_operator(cur) {
             if prec2 == prec {
-                op = cur.char;
-                advance(cur);
+                op = op2;
+                advance_operator(op, cur);
                 skip_whitespace(cur);
                 continue;
             }
@@ -1263,9 +1326,8 @@ fn match_expression(
 
     skip_whitespace(cur);
 
-    while let Some(prec) = match_operator(cur.char) {
-        let op = cur.char;
-        advance(cur);
+    while let Some((op, prec)) = match_operator(cur) {
+        advance_operator(op, cur);
         skip_whitespace(cur);
         lhs = parse_expression(lhs, op, prec, cur, input, constants)?;
     }
@@ -1281,9 +1343,8 @@ fn expect_expression(
 ) -> Result<i64, Error> {
     skip_whitespace(cur);
 
-    while let Some(prec) = match_operator(cur.char) {
-        let op = cur.char;
-        advance(cur);
+    while let Some((op, prec)) = match_operator(cur) {
+        advance_operator(op, cur);
         skip_whitespace(cur);
         lhs = parse_expression(lhs, op, prec, cur, input, constants)?;
     }
@@ -2112,6 +2173,11 @@ mod tests {
         r.pass("mov eax, ---100", &[0xb8, 0x9c, 0xff, 0xff, 0xff]);
         r.fail("mov eax, -", 10);
 
+        r.pass("and eax, ~0x70", &[0x83, 0xe0, 0x8f]);
+        r.pass("and eax, ~~0x70", &[0x83, 0xe0, 0x70]);
+        r.pass("and eax, ~~~0x70", &[0x83, 0xe0, 0x8f]);
+        r.fail("and eax, ~", 10);
+
         r.pass("mov eax, 12 + 34", &[0xb8, 0x2e, 0x00, 0x00, 0x00]);
         r.fail("mov eax, 12 +", 13);
         r.pass("mov eax, 12 - 34", &[0xb8, 0xea, 0xff, 0xff, 0xff]);
@@ -2140,6 +2206,9 @@ mod tests {
             "mov eax, (2 + 3) * -4 / -(5 - 6)",
             &[0xb8, 0xec, 0xff, 0xff, 0xff],
         );
+
+        r.pass("mov eax, 0b1 | 0b10", &[0xb8, 0b11, 0x00, 0x00, 0x00]);
+        r.pass("mov eax, 0b100000 >> 5 | 1 << 4", &[0xb8, 0x11, 0x00, 0x00, 0x00]);
 
         assert!(!r.failed);
     }

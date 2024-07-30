@@ -337,6 +337,37 @@ exit:
   xor edi, edi
   syscall
 
+; x: eax, y: ebx, digit (ascii): ecx, color: edx
+draw_digit:
+  sub ecx, 48
+  lea rsi, [font]
+  movzx ecx, m16 [rsi+rcx*2]
+
+  lea rdi, [screen]
+  imul eax, eax, 4
+  imul ebx, ebx, screen_pitch
+  add rdi, rax
+  add rdi, rbx
+
+  xor ebx, ebx ; y counter
+: xor eax, eax ; x counter
+: test cl, 1
+  jz >
+  mov m32 [rdi+rax*8], edx
+  mov m32 [rdi+rax*8+4], edx
+  mov m32 [rdi+rax*8+screen_pitch], edx
+  mov m32 [rdi+rax*8+screen_pitch+4], edx
+: shr ecx, 1
+  inc eax
+  cmp eax, 3
+  jl <<
+  add rdi, screen_pitch*2
+  inc ebx
+  cmp ebx, 5
+  jl <<<
+
+  ret
+
 ; x: eax, y: ebx, sprite: ecx
 draw_sprite:
   .push r8 r9
@@ -504,6 +535,19 @@ draw_world:
 : inc r9d
   cmp r9d, max_entities
   jl <<
+
+  xor r8d, r8d
+: mov eax, r8d
+  imul eax, eax, 8
+  add eax, 8
+  mov ebx, 8
+  mov ecx, r8d
+  add ecx, 48
+  mov edx, 0xafa08f
+  call draw_digit
+  inc r8d
+  cmp r8d, 10
+  jl <
 
   .pop
   ret
@@ -1385,6 +1429,9 @@ tiles:
 sprites:
   .i32 0x8002aa00 0x56a00aaa 0x2955a02a 0xa82996a0 0x5aa829a6 0x2aa9a82a 0x5a29a56a 0xa96aa5a5 0x2aaaa8a6
   .i32 0x00000000 0xaa800000 0x0aaaa800 0x6a2a95aa 0x5a6a2a55 0x2a556a2a 0x9a29999a 0xa6a829a6 0x02aaa00a
+
+font:
+  .i16 0x7b6f 0x749a 0x73e7 0x79e7 0x49ed 0x79cf 0x7bcf 0x4927 0x7bef 0x49ef
 
 rng_state: .i32 0
 sockfd: .i32 0

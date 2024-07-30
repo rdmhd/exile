@@ -114,6 +114,8 @@ struct Context<'a> {
     anon_labels: Vec<i64>,
     anon_patches: Vec<AnonPatch>,
     constants: HashMap<&'a str, i64>,
+    pushed_regs: Vec<u8>,
+    verbose: bool,
 }
 
 struct Output<'a> {
@@ -427,6 +429,8 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
         anon_labels: Vec::new(),
         anon_patches: Vec::new(),
         constants: HashMap::new(),
+        pushed_regs: Vec::new(),
+        verbose,
     };
 
     loop {
@@ -448,7 +452,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
                     continue;
                 } else {
                     skip_whitespace(&mut cur);
-                    asm_directive(ident, at, &mut cur, input, ctx.out.data, &mut ctx.constants)?;
+                    asm_directive(ident, at, &mut cur, input, &mut ctx)?;
                 }
             } else {
                 return error_at(cur.off, "expected directive name");
@@ -472,7 +476,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
                 continue;
             } else {
                 skip_whitespace(&mut cur);
-                asm_instruction((ident, at), &mut cur, input, &mut ctx, verbose)?;
+                asm_instruction((ident, at), &mut cur, input, &mut ctx)?;
             }
         } else if match_char(':', &mut cur) {
             if ctx.curr_label.is_empty() {
@@ -806,7 +810,6 @@ fn asm_instruction<'a>(
     cur: &mut Cursor,
     input: &'a str,
     ctx: &mut Context<'a>,
-    verbose: bool,
 ) -> Result<(), Error> {
     let mut arg1 = Arg::None;
     let mut arg2 = Arg::None;
@@ -854,52 +857,11 @@ fn asm_instruction<'a>(
     }
 
     if let Some(insn) = choose_insn(mnemonic, &arg1, &arg2, &arg3) {
-        let off = ctx.out.data.len();
-
         emit_insn(insn, &arg1, &arg2, &arg3, ctx)?;
-
-        if verbose {
-            let mut s = String::new();
-
-            s.push_str(&format!("{off:08x} ", off = off - 120));
-
-            for &byte in &ctx.out.data[off..] {
-                s.push_str(&format!("{byte:02x} "));
-            }
-
-            let mut col = 45;
-            if s.len() < col {
-                for _ in 0..col - s.len() {
-                    s.push(' ');
-                }
-            }
-
-            s.push_str(&format!("{mnemonic}"));
-
-            col += 16;
-            if s.len() < col {
-                for _ in 0..col - s.len() {
-                    s.push(' ');
-                }
-            }
-
-            for (idx, arg) in [arg1, arg2, arg3].iter().enumerate() {
-                if let Arg::None = arg {
-                    break;
-                }
-                if idx > 0 && idx <= 2 {
-                    s.push_str(", ");
-                }
-                s.push_str(&format!("{arg}"));
-            }
-
-            println!("{}", s);
-        }
     } else {
-        if verbose {
+        if ctx.verbose {
             eprintln!("?? {mnemonic} {arg1}, {arg2}, {arg3}");
         }
-
         return error_at(at, "unknown instruction");
     }
 
@@ -935,8 +897,7 @@ fn asm_directive<'a>(
     at: usize,
     cur: &mut Cursor,
     input: &'a str,
-    out: &mut Vec<u8>,
-    constants: &mut HashMap<&'a str, i64>,
+    ctx: &mut Context<'a>,
 ) -> Result<(), Error> {
     match name {
         "i8" => {
@@ -950,20 +911,20 @@ fn asm_directive<'a>(
                         } else if cur.iter.as_str().len() == 0 {
                             return error_at(cur.off + 1, "unterminated string literal");
                         } else {
-                            out.push(cur.char as u8); // TODO: enable utf8 chars longer than
-                                                      // one byte
+                            ctx.out.data.push(cur.char as u8); // TODO: enable utf8 chars longer than
+                                                               // one byte
                             advance(cur);
                         }
                     }
-                } else if let Some(mut int) = match_expression(cur, input, constants)? {
+                } else if let Some(mut int) = match_expression(cur, input, &mut ctx.constants)? {
                     loop {
                         if is_valid8(int) {
-                            out.push(int as u8);
+                            ctx.out.data.push(int as u8);
                         } else {
                             return error_at(cur.off, "value doesn't fit in 16 bits");
                         }
                         skip_whitespace(cur);
-                        if let Some(x) = match_expression(cur, input, constants)? {
+                        if let Some(x) = match_expression(cur, input, &mut ctx.constants)? {
                             int = x;
                         } else {
                             break;
@@ -981,31 +942,31 @@ fn asm_directive<'a>(
             }
         }
         "i16" | "i32" | "i64" => {
-            if let Some(mut int) = match_expression(cur, input, constants)? {
+            if let Some(mut int) = match_expression(cur, input, &mut ctx.constants)? {
                 loop {
                     match name {
                         "i16" => {
                             if is_valid16(int) {
-                                emit16(int as u16, out)
+                                emit16(int as u16, &mut ctx.out.data)
                             } else {
                                 return error_at(cur.off, "value doesn't fit in 16 bits");
                             }
                         }
                         "i32" => {
                             if is_valid32(int) {
-                                emit32(int as u32, out)
+                                emit32(int as u32, &mut ctx.out.data)
                             } else {
                                 return error_at(cur.off, "value doesn't fit in 32 bits");
                             }
                         }
                         "i64" => {
                             // should be valid as long as the value was checked for overflow
-                            emit64(int as u64, out)
+                            emit64(int as u64, &mut ctx.out.data)
                         }
                         _ => unreachable!(),
                     }
                     skip_whitespace(cur);
-                    if let Some(x) = match_expression(cur, input, constants)? {
+                    if let Some(x) = match_expression(cur, input, &mut ctx.constants)? {
                         int = x;
                     } else {
                         break;
@@ -1016,19 +977,18 @@ fn asm_directive<'a>(
             }
         }
         "res" => {
-            if let Some(int) = match_expression(cur, input, constants)? {
-                let len = out.len() + int as usize;
-                out.resize(len, 0);
+            if let Some(int) = match_expression(cur, input, &mut ctx.constants)? {
+                let len = ctx.out.data.len() + int as usize;
+                ctx.out.data.resize(len, 0);
             } else {
                 return error_at(cur.off, "expected number of bytes to reserve");
             }
         }
         "def" => {
-            skip_whitespace(cur);
             if let Some((ident, at)) = match_identifier(cur, input) {
                 skip_whitespace(cur);
-                if let Some(int) = match_expression(cur, input, constants)? {
-                    if constants.try_insert(ident, int).is_err() {
+                if let Some(int) = match_expression(cur, input, &mut ctx.constants)? {
+                    if ctx.constants.try_insert(ident, int).is_err() {
                         return error_at(at, "constant already defined");
                     }
                 } else {
@@ -1037,6 +997,42 @@ fn asm_directive<'a>(
             } else {
                 return error_at(cur.off, "expected constant name");
             }
+        }
+        "push" => {
+            if !ctx.pushed_regs.is_empty() {
+                return error_at(at, "there are already pushed registers");
+            }
+            while let Some((ident, at)) = match_identifier(cur, input) {
+                if let Some(Arg::Reg64(reg)) = parse_register(ident) {
+                    if !ctx.pushed_regs.contains(&(reg as u8)) {
+                        ctx.pushed_regs.push(reg as u8);
+                        let insn =
+                            choose_insn("push", &Arg::Reg64(reg), &Arg::None, &Arg::None).unwrap();
+                        emit_insn(insn, &Arg::Reg64(reg), &Arg::None, &Arg::None, ctx)?;
+                    } else {
+                        return error_at(at, "register already pushed");
+                    }
+                } else {
+                    return error_at(at, "expected 64-bit register");
+                }
+                skip_whitespace(cur);
+            }
+            if ctx.pushed_regs.is_empty() {
+                return error_at(at, "must push at least one register");
+            }
+        }
+        "pop" => {
+            if ctx.pushed_regs.is_empty() {
+                return error_at(at, "there are no registers to pop");
+            }
+            let regs = ctx.pushed_regs.clone();
+            for &reg in regs.iter().rev() {
+                let insn =
+                    choose_insn("pop", &Arg::Reg64(reg as u32), &Arg::None, &Arg::None).unwrap();
+                emit_insn(insn, &Arg::Reg64(reg as u32), &Arg::None, &Arg::None, ctx)?;
+            }
+
+            ctx.pushed_regs.clear();
         }
         _ => return error_at(at, "unknown directive"),
     }
@@ -1560,6 +1556,8 @@ fn emit_insn<'a>(
     ctx.out.len = insn.opcodes.len();
     ctx.out.rex = insn.rex as u32;
 
+    let off = ctx.out.data.len();
+
     unsafe {
         ctx.out
             .buf
@@ -1622,6 +1620,44 @@ fn emit_insn<'a>(
     }
 
     ctx.out.data.extend_from_slice(&ctx.out.buf[..ctx.out.len]);
+
+    if ctx.verbose {
+        let mut s = String::new();
+
+        s.push_str(&format!("{off:08x} ", off = off - 120));
+
+        for &byte in &ctx.out.data[off..] {
+            s.push_str(&format!("{byte:02x} "));
+        }
+
+        let mut col = 45;
+        if s.len() < col {
+            for _ in 0..col - s.len() {
+                s.push(' ');
+            }
+        }
+
+        s.push_str(&format!("{mnemonic}", mnemonic = insn.mnemonic));
+
+        col += 16;
+        if s.len() < col {
+            for _ in 0..col - s.len() {
+                s.push(' ');
+            }
+        }
+
+        for (idx, arg) in [arg1, arg2, arg3].iter().enumerate() {
+            if let Arg::None = arg {
+                break;
+            }
+            if idx > 0 && idx <= 2 {
+                s.push_str(", ");
+            }
+            s.push_str(&format!("{arg}"));
+        }
+
+        println!("{}", s);
+    }
 
     Ok(())
 }
@@ -2208,7 +2244,10 @@ mod tests {
         );
 
         r.pass("mov eax, 0b1 | 0b10", &[0xb8, 0b11, 0x00, 0x00, 0x00]);
-        r.pass("mov eax, 0b100000 >> 5 | 1 << 4", &[0xb8, 0x11, 0x00, 0x00, 0x00]);
+        r.pass(
+            "mov eax, 0b100000 >> 5 | 1 << 4",
+            &[0xb8, 0x11, 0x00, 0x00, 0x00],
+        );
 
         assert!(!r.failed);
     }
@@ -2239,6 +2278,36 @@ mod tests {
         );
 
         r.fail(".def x 12\n.def x 34", 15);
+
+        assert!(!r.failed);
+    }
+
+    #[test]
+    fn test_push_pop_directives() {
+        let mut r = Runner::new();
+
+        r.pass(
+            "mov eax, 2\n\
+             mov ebx, 3\n\
+             .push rax rbx\n\
+             mov eax, 4\n\
+             mov ebx, 5\n\
+             .pop",
+            &[
+                0xb8, 0x02, 0x00, 0x00, 0x00, 0xbb, 0x03, 0x00, 0x00, 0x00, 0x50, 0x53, 0xb8, 0x04,
+                0x00, 0x00, 0x00, 0xbb, 0x05, 0x00, 0x00, 0x00, 0x5b, 0x58,
+            ],
+        );
+
+        r.pass(
+            ".push rax rbx\n .pop\n .push rcx rdx",
+            &[0x50, 0x53, 0x5b, 0x58, 0x51, 0x52],
+        );
+
+        r.fail(".push", 1);
+        r.fail(".pop", 1);
+        r.fail(".push rax rbx rcx rbx", 18);
+        r.fail(".push rax\n.push rbx", 11);
 
         assert!(!r.failed);
     }

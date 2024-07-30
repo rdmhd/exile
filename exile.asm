@@ -339,8 +339,7 @@ exit:
 
 ; x: eax, y: ebx, sprite: ecx
 draw_sprite:
-  push r8
-  push r9
+  .push r8 r9
 
   lea rdx, [screen]
   imul eax, eax, tile_size * 4
@@ -381,13 +380,12 @@ draw_sprite:
   cmp r8d, 9
   jl <<<<
 
-  pop r9
-  pop r8
+  .pop
   ret
 
 ; entity id: eax
 draw_entity:
-  push r10
+  .push r10
   mov r10d, eax
   lea rax, [entities]
   lea r10, [rax+r10*4]
@@ -402,12 +400,12 @@ draw_entity:
   movzx ecx, m8 [r10+1]
   mov edx, 0xff0000
   call draw_point
-: pop r10
+: .pop
   ret
 
 ; sprite: eax, x: ebx, y: ecx
 draw_tile:
-  push r8
+  .push r8
   lea rsi, [tiles-9*2]
   lea rdi, [screen]
   imul ebx, ebx, 24 * 4
@@ -439,13 +437,11 @@ draw_tile:
   add rsi, 2
   dec ecx
   jnz <<<
-  pop r8
+  .pop
   ret
 
 draw_tilemap:
-  push r8
-  push r9
-  push r10
+  .push r8 r9 r10
   lea r8, [tilemap]
   xor r10d, r10d ; y counter
 : xor r9d, r9d ; x counter
@@ -462,16 +458,11 @@ draw_tilemap:
   inc r10d
   cmp r10d, map_height
   jl <<<
-  pop r10
-  pop r9
-  pop r8
+  .pop
   ret
 
 redraw_tilemap:
-  push r8
-  push r9
-  push r10
-  push r11
+  .push r8 r9 r10 r11
   lea r8, [tilemap]
   xor r10d, r10d ; y counter
 : xor r9d, r9d ; x counter
@@ -497,21 +488,15 @@ redraw_tilemap:
   inc r10d
   cmp r10d, map_height
   jne <<<
-  pop r11
-  pop r10
-  pop r9
-  pop r8
+  .pop
   ret
 
 draw_world:
-  push r8
-  push r9
-  push r10
+  .push r8 r9 r10
   call draw_tilemap
 
   lea r8, [entities]
   mov r9d, 1
-
 : mov eax, r9d
   cmp m8 [r8+r9*4+2], 0
   je >
@@ -520,9 +505,7 @@ draw_world:
   cmp r9d, max_entities
   jl <<
 
-  pop r10
-  pop r9
-  pop r8
+  .pop
   ret
 
 clear_screen:
@@ -554,9 +537,7 @@ move_char:
 ; delta x: ebx, delta y: ecx, id: edx
 ; -> eax, 0 if could not move, 0xff if moved, blocking entity id othwerwise
 move_entity:
-  push r8
-  push r9
-  push r10
+  .push r8 r9 r10
 
   xor eax, eax
   lea rsi, [tilemap]
@@ -607,14 +588,11 @@ move_entity:
   mov [rsi+rdi], al
 
   mov eax, 0xff
-: pop r10
-  pop r9
-  pop r8
+: .pop
   ret
 
 simulate_entities:
-  push r8
-  push r9
+  .push r8 r9
   mov r8d, 2
   lea r9, [entities]
 : cmp m8 [r9+r8*4+2], 0
@@ -642,8 +620,7 @@ simulate_entities:
 : inc r8d
   cmp r8d, max_entities
   jl <<
-  pop r9
-  pop r8
+  .pop
   ret
 
 ; entity id: ebx
@@ -678,13 +655,7 @@ move_randomly:
 ; x0: eax, y0: ebx, x1: ecx, y1: edx, maxdist: esi
 ; -> hit char: eax
 bresenham:
-  push r8
-  push r9
-  push r10
-  push r11
-  push r12
-  push r13
-  push r14
+  .push r8 r9 r10 r11 r12 r13 r14
 
   mov r13d, esi
   xor r14d, r14d
@@ -785,21 +756,13 @@ bresenham:
 
 .done:
   mov eax, r14d
-  pop r14
-  pop r13
-  pop r12
-  pop r11
-  pop r10
-  pop r9
-  pop r8
+  .pop
   ret
 
 ; from x: eax, from y: ebx
 ; -> eax
 char_visible:
-  push r8
-  push r9
-  push r10
+  .push r8 r9 r10
 
   mov r8d, eax
   mov r9d, ebx
@@ -879,9 +842,7 @@ char_visible:
   xor eax, eax
 
 .done:
-  pop r10
-  pop r9
-  pop r8
+  .pop
   ret
 
 ; x: ebx, y: ecx, color: edx
@@ -919,9 +880,7 @@ clear_map:
   ret
 
 generate_map:
-  push r8
-  push r9
-  push r10
+  .push r8 r9 r10
   sub rsp, max_rooms * 4
 
   xor r8d, r8d ; room count
@@ -1041,15 +1000,11 @@ generate_map:
 
 .done:
   add rsp, max_rooms * 4
-  pop r10
-  pop r9
-  pop r8
+  .pop
   ret
 
 place_entities:
-  push r8
-  push r9
-  push r10
+  .push r8 r9 r10
 
   lea r8, [entities+4]
   mov r9d, 1
@@ -1096,18 +1051,12 @@ place_entities:
   cmp ebx, max_enemies + 2
   jl <
 
-  pop r10
-  pop r9
-  pop r8
+  .pop
   ret
 
 ; room dst: rbx
 random_room:
-  push r8
-  push r9
-  push r10
-  push r11
-  push r12
+  .push r8 r9 r10 r11 r12
   ; (r12) store room dst
   mov r12, rbx
 
@@ -1153,20 +1102,13 @@ random_room:
   mov [r12+1], r9b
   mov [r12+2], r10b
   mov [r12+3], r11b
-  pop r12
-  pop r11
-  pop r10
-  pop r9
-  pop r8
+  .pop
   ret
 
 ; room: rbx, rooms: rcx, count: edx
 ; -> eax TODO: swap result boolean
 room_placeable:
-  push r8
-  push r9
-  push r10
-  push r11
+  .push r8 r9 r10 r11
   mov r8, rbx   ; room
   mov r9, rcx   ; rooms
   mov r10d, edx ; count
@@ -1181,10 +1123,7 @@ room_placeable:
   jnz <
   xor r11d, r11d
 : mov eax, r11d
-  pop r11
-  pop r10
-  pop r9
-  pop r8
+  .pop
   ret
 
 ; new room: rbx, existing room: rcx
@@ -1242,10 +1181,7 @@ place_room:
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx
 place_connection:
-  push r8
-  push r9
-  push r10
-  push r11
+  .push r8 r9 r10 r11
   mov r8d, eax ; store x0
   mov r9d, ebx ; store y0
   mov r10d, ecx ; store x1
@@ -1272,10 +1208,7 @@ place_connection:
   mov ecx, r11d
   call place_connection_horz
 .done:
-  pop r11
-  pop r10
-  pop r9
-  pop r8
+  .pop
   ret
 
 ; x0: eax, x1: ebx, y: ecx
@@ -1336,8 +1269,7 @@ xorshift32:
 ; min: eax, max: ebx
 ; -> result: eax
 random_int:
-  push r8
-  push r9
+  .push r8 r9
   mov r8d, eax
   mov r9d, ebx
   sub r9d, r8d
@@ -1347,8 +1279,7 @@ random_int:
   div r9d
   mov eax, edx
   add eax, r8d
-  pop r9
-  pop r8
+  .pop
   ret
 
 xauth: .i8 "XAUTHORITY="

@@ -4,14 +4,15 @@
 
 .def screen_width  map_width * tile_size
 .def screen_height map_height * tile_size
+.def screen_pitch  screen_width*4
 
 .def tile_walkable 0x80
 .def tile_entity   0x70
 .def tile_redraw   0x08
 .def tile_sprite   0x03
 
-.def max_rooms 8
-.def max_walls 15
+.def max_rooms 10
+.def max_walls 20
 
 .def fov_distance 5
 
@@ -351,8 +352,8 @@ draw_sprite:
   cmove esi, edi
   mov m32 [rdx], esi
   mov m32 [rdx+4], esi
-  mov m32 [rdx+1920], esi
-  mov m32 [rdx+1920+4], esi
+  mov m32 [rdx+screen_pitch], esi
+  mov m32 [rdx+screen_pitch+4], esi
 : inc r9d
   cmp r9d, 12
   jne >
@@ -395,7 +396,7 @@ draw_tile:
   lea rsi, [tiles-9*2]
   lea rdi, [screen]
   imul ebx, ebx, 24 * 4
-  imul ecx, ecx, 24 * 4 * 480
+  imul ecx, ecx, 24 * 4 * screen_width
   imul eax, eax, 9 * 2
   add rdi, rbx
   add rdi, rcx
@@ -410,12 +411,12 @@ draw_tile:
   cmovnz r8d, ebp
   mov m32 [rdi], r8d
   mov m32 [rdi+4], r8d
-  mov m32 [rdi+1920], r8d
-  mov m32 [rdi+1920+4], r8d
+  mov m32 [rdi+screen_pitch], r8d
+  mov m32 [rdi+screen_pitch+4], r8d
   add rdi, 8
   dec edx
   jnz >
-  add rdi, (screen_width * 2 - tile_size) * 4 ; move down 2 lines in the screen buffer
+  add rdi, screen_pitch*2 - tile_size*4
   mov edx, 12
 : shr eax, 1
   dec ebx
@@ -476,10 +477,10 @@ redraw_tilemap:
   and m8 [r8], 0xf7 ; remove 'redraw' flag ; TODO: ~tile_redraw
 : inc r8
   inc r9d
-  cmp r9d, 20
+  cmp r9d, map_width
   jne <<
   inc r10d
-  cmp r10d, 15
+  cmp r10d, map_height
   jne <<<
   pop r11
   pop r10
@@ -513,7 +514,7 @@ clear_screen:
   xor ebx, ebx
 : mov m64 [rax+rbx*8], 0
   inc ebx
-  cmp ebx, 86400
+  cmp ebx, (screen_width * screen_height * 4)/8
   jl <
   ret
 
@@ -873,18 +874,18 @@ draw_point:
   mov m32 [rax+4], edx
   mov m32 [rax+8], edx
   mov m32 [rax+12], edx
-  mov m32 [rax+480*4], edx
-  mov m32 [rax+480*4+4], edx
-  mov m32 [rax+480*4+8], edx
-  mov m32 [rax+480*4+12], edx
-  mov m32 [rax+480*2*4], edx
-  mov m32 [rax+480*2*4+4], edx
-  mov m32 [rax+480*2*4+8], edx
-  mov m32 [rax+480*2*4+12], edx
-  mov m32 [rax+480*3*4], edx
-  mov m32 [rax+480*3*4+4], edx
-  mov m32 [rax+480*3*4+8], edx
-  mov m32 [rax+480*3*4+12], edx
+  mov m32 [rax+screen_pitch], edx
+  mov m32 [rax+screen_pitch+4], edx
+  mov m32 [rax+screen_pitch+8], edx
+  mov m32 [rax+screen_pitch+12], edx
+  mov m32 [rax+screen_pitch*2], edx
+  mov m32 [rax+screen_pitch*2+4], edx
+  mov m32 [rax+screen_pitch*2+8], edx
+  mov m32 [rax+screen_pitch*2+12], edx
+  mov m32 [rax+screen_pitch*3], edx
+  mov m32 [rax+screen_pitch*3+4], edx
+  mov m32 [rax+screen_pitch*3+8], edx
+  mov m32 [rax+screen_pitch*3+12], edx
   ret
 
 clear_map:
@@ -910,21 +911,19 @@ generate_map:
   inc r8d
 
   mov r9d, 500 ; max number of attempts
-.next_room:
-  lea rbx, [rsp+r8*4]
+: lea rbx, [rsp+r8*4]
   call random_room
   lea rbx, [rsp+r8*4]
   lea rcx, [rsp]
   mov edx, r8d
   call room_placeable
   test eax, eax
-  jnz .next_attempt
+  jnz >
   inc r8d
   cmp r8d, max_rooms
   je .rooms_generated
-.next_attempt:
-  dec r9d
-  jnz .next_room
+: dec r9d
+  jnz <<
 
 .rooms_generated:
   ; place rooms
@@ -944,6 +943,7 @@ generate_map:
 .next_connection:
   cmp r8d, 2
   jl .rooms_connected
+
   ; get center coords for first room
   movzx eax, m8 [r9+0]
   movzx ebx, m8 [r9+1]
@@ -967,6 +967,7 @@ generate_map:
   add ecx, esi
   add edx, edi
   call place_connection
+
   add r9, 4
   dec r8d
   jmp .next_connection
@@ -981,14 +982,12 @@ generate_map:
 .next_tile:
   lea rax, [r9+r8]
   cmp m8 [rax], 0
-  jne .no_change
-  sub rax, map_width
-  test m8 [rax], tile_walkable
-  jz .no_change
+  jne >
+  test m8 [rax-map_width], tile_walkable
+  jz >
   mov m8 [r9+r8], 2
-.no_change:
-  inc r8d
-  cmp r8d, 280
+: inc r8d
+  cmp r8d, (map_width - 1) * map_height
   jl .next_tile
 
   ; randomly place walls
@@ -1010,14 +1009,14 @@ generate_map:
   dec r10d
   test m8 [rbx], 0x3
   jnz <
-  cmp m8 [rbx+20], 0x81
+  cmp m8 [rbx+map_width], 0x81
   jne <
   mov m8 [rbx], 3
   dec r9d
   jnz <
 
 .done:
-  add rsp, 32
+  add rsp, max_rooms * 4
   pop r10
   pop r9
   pop r8
@@ -1123,6 +1122,7 @@ random_room:
   ret
 
 ; room: rbx, rooms: rcx, count: edx
+; -> eax TODO: swap result boolean
 room_placeable:
   push r8
   push r9

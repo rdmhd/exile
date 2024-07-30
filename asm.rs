@@ -1432,11 +1432,14 @@ fn expect_address<'a>(
                         base = Some(reg);
                     }
                 }
+            } else if let Some(&int) = constants.get(ident) {
+                let int = expect_expression(int, cur, input, constants)?;
+                disp += int;
             } else {
                 label = Some(parse_label((ident, at), cur, input)?);
             }
         } else if let Some(int) = match_expression(cur, input, constants)? {
-            disp += int as i64; // TODO: check for overflow
+            disp += int; // TODO: check for overflow
         } else {
             return error_at(cur.off, "expected address component");
         }
@@ -2137,6 +2140,36 @@ mod tests {
             "mov eax, (2 + 3) * -4 / -(5 - 6)",
             &[0xb8, 0xec, 0xff, 0xff, 0xff],
         );
+
+        assert!(!r.failed);
+    }
+
+    #[test]
+    fn test_constants() {
+        let mut r = Runner::new();
+
+        r.pass(".def x 12\nmov eax, x", &[0xb8, 0x0c, 0x00, 0x00, 0x00]);
+        r.pass(
+            ".def x 12\n.def y 34\nmov eax, x + y",
+            &[0xb8, 0x2e, 0x00, 0x00, 0x00],
+        );
+        r.pass(
+            ".def x 12\n.def y 34\n.def z x + y\nmov eax, z",
+            &[0xb8, 0x2e, 0x00, 0x00, 0x00],
+        );
+
+        // TODO: the error should point to "x" being unknown
+        r.fail("mov eax, x", 0);
+        r.fail("mov eax, x\n.def x 123", 0);
+
+        r.fail(".def x 12\nmov eax, x + y", 23);
+
+        r.pass(
+            ".def off 123\nlea rax, [rsp+off]",
+            &[0x48, 0x8d, 0x44, 0x24, 0x7b],
+        );
+
+        r.fail(".def x 12\n.def x 34", 15);
 
         assert!(!r.failed);
     }

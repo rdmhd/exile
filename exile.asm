@@ -235,7 +235,6 @@ lea rbx, [rng_state]
 mov [rbx], eax
 
 call generate_map
-call compute_distances
 call draw_world
 
 main_loop:
@@ -297,7 +296,6 @@ process_keydown:
   jne main_loop
   call clear_map
   call generate_map
-  call compute_distances
   call clear_screen
   call draw_world
   jmp refresh_screen
@@ -547,8 +545,8 @@ redraw_tilemap:
   xor r10d, r10d ; y counter
 : xor r9d, r9d ; x counter
 : movzx r11d, m8 [r8]
-  ;test r11b, tm_redraw
-  test r11b, tm_walkable
+  test r11b, tm_redraw
+  ;test r11b, tm_walkable
   jz >
   mov eax, r11d
   and eax, tm_sprite
@@ -592,7 +590,7 @@ draw_world:
   mov edx, 0xafa08f
   call draw_number
 
-  call draw_distbuf
+  ;call draw_distbuf
 
   .pop
   ret
@@ -618,10 +616,9 @@ move_char:
   cmp eax, 0xff
   je >
   ; TODO: attack here, entity id is in eax
-: call compute_distances
-  call simulate_entities
+: call simulate_entities
   call redraw_tilemap
-  call draw_distbuf
+  ;call draw_distbuf
   mov eax, 1
 : ret
 
@@ -683,23 +680,26 @@ move_entity:
   ret
 
 simulate_entities:
-  .push r8 r9
+  .push r8 r9 r10
   mov r8d, 2
   lea r9, [entities]
-: cmp m8 [r9+r8*4+2], 0
-  je >
 
-  mov ebx, r8d
-  call move_randomly
+.next:
+  call compute_distances
+
+  cmp m8 [r9+r8*4+2], 0
+  je >>>
 
   movzx eax, m8 [r9+r8*4+0]
   movzx ebx, m8 [r9+r8*4+1]
   call char_visible
+  mov r10d, eax
+
+  ; redraw indicator if necessary
   mov bl, [r9+r8*4+3]
   mov [r9+r8*4+3], al
   cmp al, bl
   je >
-
   movzx eax, m8 [r9+r8*4+0]
   movzx ebx, m8 [r9+r8*4+1]
   imul ebx, ebx, map_width
@@ -708,9 +708,16 @@ simulate_entities:
   add rcx, rbx
   or m8 [rcx], tm_redraw
 
+: test r10d, r10d
+  jnz >
+  mov ebx, r8d
+  call move_randomly
+  jmp >>
+: mov ebx, r8d
+  call move_towards_char
 : inc r8d
   cmp r8d, max_entities
-  jl <<
+  jl .next
   .pop
   ret
 
@@ -741,6 +748,65 @@ move_randomly:
 .move:
   mov edx, r8d
   call move_entity
+  ret
+
+; entity id: ebx
+move_towards_char:
+  .push r8
+  mov r8d, ebx ; store entity id
+
+  ; compute offset into tilemap for current coords
+  lea rcx, [entities]
+  lea rcx, [rcx+rbx*4]
+  movzx eax, m8 [rcx+0]
+  movzx ebx, m8 [rcx+1]
+  imul ebx, ebx, map_width
+  add eax, ebx
+
+  lea rbx, [distbuf]
+  lea rbp, [tilemap]
+  add rbx, rax
+  add rbp, rax
+  mov ecx, 0xff ; best dist
+
+  ; check adjacent tiles and pick the one with best distance
+: movzx edx, m8 [rbx+1]
+  cmp edx, ecx
+  jae >
+  mov ecx, edx
+  mov esi, 1
+  mov edi, 0
+: movzx edx, m8 [rbx-1]
+  cmp edx, ecx
+  jae >
+  mov ecx, edx
+  mov esi, -1
+  mov edi, 0
+: movzx edx, m8 [rbx+map_width]
+  cmp edx, ecx
+  jae >
+  mov ecx, edx
+  mov esi, 0
+  mov edi, 1
+: movzx edx, m8 [rbx-map_width]
+  cmp edx, ecx
+  jae >
+  mov ecx, edx
+  mov esi, 0
+  mov edi, -1
+: cmp ecx, 0xff
+  je .done
+  test ecx, ecx
+  jnz >
+  ; TODO: attack here
+  jmp .done
+: mov ebx, esi
+  mov ecx, edi
+  mov edx, r8d
+  call move_entity
+
+.done:
+  .pop
   ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx, maxdist: esi
@@ -973,6 +1039,8 @@ compute_distances:
   inc edx
   test m8 [rsi+rdx], tm_walkable
   jz >
+  test m8 [rsi+rdx], tm_entity
+  jnz >
   cmp bl, [rcx+rdx]
   jae >
   mov [rcx+rdx], bl
@@ -985,6 +1053,8 @@ compute_distances:
   dec rdx
   test m8 [rsi+rdx], tm_walkable
   jz >
+  test m8 [rsi+rdx], tm_entity
+  jnz >
   cmp bl, [rcx+rdx]
   jae >
   mov [rcx+rdx], bl
@@ -997,6 +1067,8 @@ compute_distances:
   add edx, map_width
   test m8 [rsi+rdx], tm_walkable
   jz >
+  test m8 [rsi+rdx], tm_entity
+  jnz >
   cmp bl, [rcx+rdx]
   jae >
   mov [rcx+rdx], bl
@@ -1009,6 +1081,8 @@ compute_distances:
   sub rdx, map_width
   test m8 [rsi+rdx], tm_walkable
   jz >
+  test m8 [rsi+rdx], tm_entity
+  jnz >
   cmp bl, [rcx+rdx]
   jae >
   mov [rcx+rdx], bl

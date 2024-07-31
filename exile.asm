@@ -231,9 +231,11 @@ mov [rax], r12d
 
 ; seed rng
 rdrand eax
-mov [rng_state], eax
+lea rbx, [rng_state]
+mov [rbx], eax
 
 call generate_map
+call compute_distances
 call draw_world
 
 main_loop:
@@ -295,6 +297,7 @@ process_keydown:
   jne main_loop
   call clear_map
   call generate_map
+  call compute_distances
   call clear_screen
   call draw_world
   jmp refresh_screen
@@ -337,35 +340,81 @@ exit:
   xor edi, edi
   syscall
 
-; x: eax, y: ebx, digit (ascii): ecx, color: edx
-draw_digit:
-  sub ecx, 48
-  lea rsi, [font]
-  movzx ecx, m16 [rsi+rcx*2]
+; num: eax, x: ebx, y: ecx, color: edx
+draw_number:
+  .push r8 r9 r10
+  sub rsp, 8
 
-  lea rdi, [screen]
-  imul eax, eax, 4
-  imul ebx, ebx, screen_pitch
-  add rdi, rax
-  add rdi, rbx
+  mov r8d, edx
 
+  ; store individual digits on the stack
+  mov esi, 10
+  xor r9d, r9d
+: xor edx, edx
+  div esi
+  mov [rsp+r9], dl
+  inc r9d
+  test eax, eax
+  jnz <
+
+  lea r10, [screen]
+  imul ebx, ebx, 4
+  imul ecx, ecx, screen_pitch
+  add r10, rbx
+  add r10, rcx
+
+: movzx edx, m8 [rsp+r9-1]
+  lea rdi, [font]
+  movzx edx, m16 [rdi+rdx*2]
+  mov rdi, r10
   xor ebx, ebx ; y counter
-: xor eax, eax ; x counter
-: test cl, 1
+: xor ecx, ecx ; x counter
+: test dl, 1
   jz >
-  mov m32 [rdi+rax*8], edx
-  mov m32 [rdi+rax*8+4], edx
-  mov m32 [rdi+rax*8+screen_pitch], edx
-  mov m32 [rdi+rax*8+screen_pitch+4], edx
-: shr ecx, 1
-  inc eax
-  cmp eax, 3
+  mov m32 [rdi+rcx*8], r8d
+  mov m32 [rdi+rcx*8+4], r8d
+  mov m32 [rdi+rcx*8+screen_pitch], r8d
+  mov m32 [rdi+rcx*8+screen_pitch+4], r8d
+: shr edx, 1
+  inc ecx
+  cmp ecx, 3
   jl <<
   add rdi, screen_pitch*2
   inc ebx
   cmp ebx, 5
   jl <<<
+  add r10, 4 * 8
+  dec r9d
+  jnz <<<<
 
+  add rsp, 8
+  .pop
+  ret
+
+draw_distbuf:
+  .push r8 r9 r10
+  lea r10, [distbuf]
+  xor r9d, r9d ; y counter
+: xor r8d, r8d ; x counter
+: movzx eax, m8 [r10]
+  test eax, eax
+  jz >
+  cmp eax, 0xff
+  jge >
+  mov ebx, r8d
+  mov ecx, r9d
+  imul ebx, ebx, tile_size
+  imul ecx, ecx, tile_size
+  mov edx, 0xff00ab
+  call draw_number
+: inc r10
+  inc r8d
+  cmp r8d, map_width
+  jl <<
+  inc r9d
+  cmp r9d, map_height
+  jl <<<
+  .pop
   ret
 
 ; x: eax, y: ebx, sprite: ecx
@@ -498,7 +547,8 @@ redraw_tilemap:
   xor r10d, r10d ; y counter
 : xor r9d, r9d ; x counter
 : movzx r11d, m8 [r8]
-  test r11b, tm_redraw
+  ;test r11b, tm_redraw
+  test r11b, tm_walkable
   jz >
   mov eax, r11d
   and eax, tm_sprite
@@ -536,18 +586,13 @@ draw_world:
   cmp r9d, max_entities
   jl <<
 
-  xor r8d, r8d
-: mov eax, r8d
-  imul eax, eax, 8
-  add eax, 8
-  mov ebx, 8
-  mov ecx, r8d
-  add ecx, 48
+  mov eax, [map_seed]
+  mov ebx, 4
+  mov ecx, 4
   mov edx, 0xafa08f
-  call draw_digit
-  inc r8d
-  cmp r8d, 10
-  jl <
+  call draw_number
+
+  call draw_distbuf
 
   .pop
   ret
@@ -573,8 +618,10 @@ move_char:
   cmp eax, 0xff
   je >
   ; TODO: attack here, entity id is in eax
-: call simulate_entities
+: call compute_distances
+  call simulate_entities
   call redraw_tilemap
+  call draw_distbuf
   mov eax, 1
 : ret
 
@@ -889,11 +936,98 @@ char_visible:
   .pop
   ret
 
+compute_distances:
+  sub rsp, 64*4
+  lea rcx, [distbuf]
+
+  ; load char coords
+  lea rsi, [entities]
+  movzx eax, m8 [rsi+4+0]
+  movzx ebx, m8 [rsi+4+1]
+
+  ; reset distbuf
+  xor edx, edx
+: mov m8 [rcx+rdx], 0xff
+  inc edx
+  cmp edx, map_width * map_height
+  jl <
+
+  ; push initial coords
+  imul ebx, ebx, map_width
+  add eax, ebx
+  mov [rsp+0], ax
+  mov m8 [rsp+2], 0
+  mov m8 [rcx+rax], 0
+
+  mov edi, 1 ; stack size
+  lea rsi, [tilemap]
+
+.next:
+  dec edi
+  movzx eax, m16 [rsp+rdi*4] ; get offset from stack
+  movzx ebx, m8 [rsp+rdi*4+2] ; get dist from stack
+  inc ebx
+
+  ; [1, 0]
+  mov edx, eax
+  inc edx
+  test m8 [rsi+rdx], tm_walkable
+  jz >
+  cmp bl, [rcx+rdx]
+  jae >
+  mov [rcx+rdx], bl
+  mov [rsp+rdi*4+0], dx
+  mov [rsp+rdi*4+2], bl
+  inc edi
+
+  ; [-1, 0]
+: mov edx, eax
+  dec rdx
+  test m8 [rsi+rdx], tm_walkable
+  jz >
+  cmp bl, [rcx+rdx]
+  jae >
+  mov [rcx+rdx], bl
+  mov [rsp+rdi*4+0], dx
+  mov [rsp+rdi*4+2], bl
+  inc edi
+
+  ; [0, 1]
+: mov edx, eax
+  add edx, map_width
+  test m8 [rsi+rdx], tm_walkable
+  jz >
+  cmp bl, [rcx+rdx]
+  jae >
+  mov [rcx+rdx], bl
+  mov [rsp+rdi*4+0], dx
+  mov [rsp+rdi*4+2], bl
+  inc edi
+
+  ; [0, -1]
+: mov edx, eax
+  sub rdx, map_width
+  test m8 [rsi+rdx], tm_walkable
+  jz >
+  cmp bl, [rcx+rdx]
+  jae >
+  mov [rcx+rdx], bl
+  mov [rsp+rdi*4+0], dx
+  mov [rsp+rdi*4+2], bl
+  inc edi
+
+: test edi, edi
+  jnz .next
+
+  add rsp, 64*4
+  ret
+
 ; x: ebx, y: ecx, color: edx
 draw_point:
   lea rax, [screen]
   imul ebx, ebx, tile_size * 4
   imul ecx, ecx, tile_size * 4 * screen_width
+  add ebx, (tile_size - 8) * 4
   add rax, rbx
   add rax, rcx
   mov m32 [rax], edx
@@ -926,6 +1060,11 @@ clear_map:
 generate_map:
   .push r8 r9 r10
   sub rsp, max_rooms * 4
+
+  lea rax, [rng_state]
+  mov eax, [rax]
+  lea rbx, [map_seed]
+  mov [rbx], eax
 
   xor r8d, r8d ; room count
 
@@ -1433,6 +1572,7 @@ sprites:
 font:
   .i16 0x7b6f 0x749a 0x73e7 0x79e7 0x49ed 0x79cf 0x7bcf 0x4927 0x7bef 0x49ef
 
+map_seed: .i32 0
 rng_state: .i32 0
 sockfd: .i32 0
 
@@ -1440,6 +1580,8 @@ sockfd: .i32 0
 entities: .res max_entities*4
 
 tilemap: .res screen_width * screen_height
+
+distbuf: .res map_width * map_height
 
 put_image:
   .i8 72             ; opcode

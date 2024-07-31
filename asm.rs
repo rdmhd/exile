@@ -20,7 +20,7 @@ enum Arg<'a> {
     None,
     Eax,
     Reg8(u32),
-    _Reg16(u32),
+    Reg16(u32),
     Reg32(u32),
     Reg64(u32),
     Imm(i64),
@@ -45,6 +45,7 @@ impl Arg<'_> {
         match self {
             Arg::Eax => 0,
             Arg::Reg8(reg) => *reg,
+            Arg::Reg16(reg) => *reg,
             Arg::Reg32(reg) => *reg,
             Arg::Reg64(reg) => *reg,
             _ => unreachable!(),
@@ -58,7 +59,7 @@ impl Display for Arg<'_> {
             Arg::None => write!(f, "<none>"),
             Arg::Eax => write!(f, "eax"),
             Arg::Reg8(reg) => write!(f, "{} (r8)", REGS8[*reg as usize]),
-            Arg::_Reg16(_reg) => todo!(),
+            Arg::Reg16(reg) => write!(f, "{} (r16)", REGS16[*reg as usize]),
             Arg::Reg32(reg) => write!(f, "{} (r32)", REGS32[*reg as usize]),
             Arg::Reg64(reg) => write!(f, "{} (r64)", REGS64[*reg as usize]),
             Arg::Imm(imm) => write!(f, "{imm} (imm)"),
@@ -123,11 +124,15 @@ struct Output<'a> {
     buf: [u8; 16],
     len: usize,
     rex: u32,
+    h66: bool,
 }
 
 impl Output<'_> {
     fn pos(&self) -> i64 {
-        (self.data.len() + self.len + if self.rex != 0 { 1 } else { 0 }) as i64
+        let mut pos = (self.data.len() + self.len) as i64;
+        if self.rex != 0 { pos += 1; }
+        if self.h66 { pos += 1; }
+        pos
     }
 }
 
@@ -210,6 +215,7 @@ struct Insn {
     op2: Op,
     op3: Op,
     rex: u8,
+    h66: bool,
     opcodes: &'static [u8],
     reg: u8,
     encoding: Enc,
@@ -220,7 +226,7 @@ enum Op {
     None,
     Eax,
     R8,
-    _R16,
+    R16,
     R32,
     R64,
     RM8,
@@ -240,6 +246,10 @@ enum Op {
 const REGS8: [&str; 16] = [
     "al", "cl", "dl", "bl", "", "", "", "", "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b",
     "r15b",
+];
+
+const REGS16: [&str; 4] = [
+    "ax", "cx", "dx", "bx"
 ];
 
 const REGS32: [&str; 16] = [
@@ -424,6 +434,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
             buf: [0; 16],
             len: 0,
             rex: 0,
+            h66: false,
         },
         curr_label: "",
         anon_labels: Vec::new(),
@@ -598,97 +609,100 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 90] = [
-        insn("add",     RM32,  R32,     None,    0,       &[0x01],       0, Enc::MR),
-        insn("add",     RM64,  R64,     None,    REX_W,   &[0x01],       0, Enc::MR),
-        insn("add",     RM32,  Imm8sx,  None,    0,       &[0x83],       0, Enc::MI),
-        insn("add",     RM64,  Imm8sx,  None,    REX_W,   &[0x83],       0, Enc::MI),
-        insn("add",     RM32,  Imm32,   None,    0,       &[0x81],       0, Enc::MI),
-        insn("add",     RM64,  Imm32sx, None,    REX_W,   &[0x81],       0, Enc::MI),
-        insn("and",     RM8,   Imm8,    None,    0,       &[0x80],       4, Enc::MI),
-        insn("and",     RM32,  Imm8sx,  None,    0,       &[0x83],       4, Enc::MI),
-        insn("call",    Rel32, None,    None,    0,       &[0xe8],       0, Enc::D),
-        insn("cmove",   R32,   RM32,    None,    0,       &[0x0f, 0x44], 0, Enc::RM),
-        insn("cmovg",   R32,   RM32,    None,    0,       &[0x0f, 0x4f], 0, Enc::RM),
-        insn("cmovg",   R32,   RM32,    None,    0,       &[0x0f, 0x4f], 0, Enc::RM),
-        insn("cmovg",   R64,   RM64,    None,    REX_W,   &[0x0f, 0x4f], 0, Enc::RM),
-        insn("cmovl",   R32,   RM32,    None,    0,       &[0x0f, 0x4c], 0, Enc::RM),
-        insn("cmovne",  R32,   RM32,    None,    0,       &[0x0f, 0x45], 0, Enc::RM),
-        insn("cmovnz",  R32,   RM32,    None,    0,       &[0x0f, 0x45], 0, Enc::RM),
-        insn("cmovz",   R32,   RM32,    None,    0,       &[0x0f, 0x44], 0, Enc::RM),
-        insn("cmp",     RM32,  R32,     None,    0,       &[0x39],       0, Enc::MR),
-        insn("cmp",     RM64,  R64,     None,    REX_W,   &[0x39],       0, Enc::MR),
-        insn("cmp",     R8,    RM8,     None,    0,       &[0x3a],       0, Enc::RM),
-        insn("cmp",     RM8,   Imm8,    None,    0,       &[0x80],       7, Enc::MI),
-        insn("cmp",     RM64,  Imm8sx,  None,    REX_W,   &[0x83],       7, Enc::MI),
-        insn("cmp",     RM32,  Imm8sx,  None,    0,       &[0x83],       7, Enc::MI),
-        insn("cmp",     RM32,  Imm32,   None,    0,       &[0x81],       7, Enc::MI),
-        insn("dec",     RM32,  None,    None,    0,       &[0xff],       1, Enc::M),
-        insn("dec",     RM64,  None,    None,    REX_W,   &[0xff],       1, Enc::M),
-        insn("div",     RM32,  None,    None,    0,       &[0xf7],       6, Enc::M),
-        insn("imul",    R32,   RM32,    None,    0,       &[0x0f, 0xaf], 0, Enc::RM),
-        insn("imul",    R32,   RM32,    Imm8sx,  0,       &[0x6b],       0, Enc::RMI),
-        insn("imul",    R32,   RM32,    Imm32,   0,       &[0x69],       0, Enc::RMI),
-        insn("imul",    R64,   RM64,    Imm32sx, REX_W,   &[0x69],       0, Enc::RMI),
-        insn("inc",     RM32,  None,    None,    0,       &[0xff],       0, Enc::M),
-        insn("inc",     RM64,  None,    None,    REX_W,   &[0xff],       0, Enc::M),
-        insn("int3",    None,  None,    None,    0,       &[0xcc],       0, Enc::ZO),
-        insn("ja",      Rel32, None,    None,    0,       &[0x0f, 0x87], 0, Enc::D),
-        insn("jae",     Rel32, None,    None,    0,       &[0x0f, 0x83], 0, Enc::D),
-        insn("je",      Rel32, None,    None,    0,       &[0x0f, 0x84], 0, Enc::D),
-        insn("jg",      Rel32, None,    None,    0,       &[0x0f, 0x8f], 0, Enc::D),
-        insn("jge",     Rel32, None,    None,    0,       &[0x0f, 0x8d], 0, Enc::D),
-        insn("jl",      Rel32, None,    None,    0,       &[0x0f, 0x8c], 0, Enc::D),
-        insn("jle",     Rel32, None,    None,    0,       &[0x0f, 0x8e], 0, Enc::D),
-        insn("jmp",     Rel32, None,    None,    0,       &[0xe9],       0, Enc::D),
-        insn("jne",     Rel32, None,    None,    0,       &[0x0f, 0x85], 0, Enc::D),
-        insn("jnz",     Rel32, None,    None,    0,       &[0x0f, 0x85], 0, Enc::D),
-        insn("jz",      Rel32, None,    None,    0,       &[0x0f, 0x84], 0, Enc::D),
-        insn("lea",     R64,   M,       None,    REX_W,   &[0x8d],       0, Enc::RM),
-        insn("mov",     RM8,   R8,      None,    0,       &[0x88],       0, Enc::MR),
-        insn("mov",     RM32,  R32,     None,    0,       &[0x89],       0, Enc::MR),
-        insn("mov",     RM64,  R64,     None,    REX_W,   &[0x89],       0, Enc::MR),
-        insn("mov",     R8,    RM8,     None,    0,       &[0x8a],       0, Enc::RM),
-        insn("mov",     R32,   RM32,    None,    0,       &[0x8b],       0, Enc::RM),
-        insn("mov",     R32,   Imm32,   None,    0,       &[0xb8],       0, Enc::OI),
-        insn("mov",     R64,   M64,     None,    REX_W,   &[0x8b],       0, Enc::RM),
-        insn("mov",     RM8,   Imm8,    None,    0,       &[0xc6],       0, Enc::MI),
-        insn("mov",     RM32,  Imm32,   None,    0,       &[0xc7],       0, Enc::MI),
-        insn("mov",     RM64,  Imm32sx, None,    REX_W,   &[0xc7],       0, Enc::MI),
-        insn("movsxd",  R64,   RM32,    None,    REX_W,   &[0x63],       0, Enc::RM),
-        insn("movzx",   R32,   RM8,     None,    0,       &[0x0f, 0xb6], 0, Enc::RM),
-        insn("movzx",   R32,   RM16,    None,    0,       &[0x0f, 0xb7], 0, Enc::RM),
-        insn("neg",     RM8,   None,    None,    0,       &[0xf6],       3, Enc::M),
-        insn("neg",     RM32,  None,    None,    0,       &[0xf7],       3, Enc::M),
-        insn("not",     RM8,   None,    None,    0,       &[0xf6],       2, Enc::M),
-        insn("or",      RM8,   Imm8,    None,    0,       &[0x80],       1, Enc::MI),
-        insn("or",      RM8,   R8,      None,    0,       &[0x08],       0, Enc::MR),
-        insn("or",      RM32,  Imm8sx,  None,    0,       &[0x83],       1, Enc::MI),
-        insn("or",      RM32,  R32,     None,    0,       &[0x09],       0, Enc::MR),
-        insn("pop",     R64,   None,    None,    0,       &[0x58],       0, Enc::O),
-        insn("push",    R64,   None,    None,    0,       &[0x50],       0, Enc::O),
-        insn("rdrand",  R32,   None,    None,    0,       &[0x0f, 0xc7], 6, Enc::M),
-        insn("ret",     None,  None,    None,    0,       &[0xc3],       0, Enc::ZO),
-        insn("xor",     RM32,  R32,     None,    0,       &[0x31],       0, Enc::MR),
-        insn("sete",    RM8,   None,    None,    0,       &[0x0f, 0x94], 0, Enc::M),
-        insn("setl",    RM8,   None,    None,    0,       &[0x0f, 0x9c], 0, Enc::M),
-        insn("setle",   RM8,   None,    None,    0,       &[0x0f, 0x9e], 0, Enc::M),
-        insn("setnz",   RM8,   None,    None,    0,       &[0x0f, 0x95], 0, Enc::M),
-        insn("setz",    RM8,   None,    None,    0,       &[0x0f, 0x94], 0, Enc::M),
-        insn("sar",     RM32,  Imm8,    None,    0,       &[0xc1],       7, Enc::MI),
-        insn("shl",     RM32,  Imm8,    None,    0,       &[0xc1],       4, Enc::MI),
-        insn("shr",     RM32,  One,     None,    0,       &[0xd1],       5, Enc::M1),
-        insn("shr",     RM32,  Imm8,    None,    0,       &[0xc1],       5, Enc::MI),
-        insn("sub",     RM32,  R32,     None,    0,       &[0x29],       0, Enc::MR),
-        insn("sub",     RM64,  R64,     None,    REX_W,   &[0x29],       0, Enc::MR),
-        insn("sub",     RM32,  Imm8sx,  None,    0,       &[0x83],       5, Enc::MI),
-        insn("sub",     RM64,  Imm32sx, None,    REX_W,   &[0x81],       5, Enc::MI),
-        insn("syscall", None,  None,    None,    0,       &[0x0f, 0x05], 0, Enc::ZO),
-        insn("test",    RM8,   Imm8,    None,    0,       &[0xf6],       0, Enc::MI),
-        insn("test",    RM32,  R32,     None,    0,       &[0x85],       0, Enc::MR),
-        insn("test",    Eax,   Imm32,   None,    0,       &[0xa9],       0, Enc::I2),
-        insn("xchg",    RM32,  R32,     None,    0,       &[0x87],       0, Enc::MR),
-        insn("xchg",    RM64,  R64,     None,    REX_W,   &[0x87],       0, Enc::MR),
+    static INSNS: [Insn; 93] = [
+        insn("add",     RM32,  R32,     None,    0,      false, &[0x01],       0, Enc::MR),
+        insn("add",     RM64,  R64,     None,    REX_W,  false, &[0x01],       0, Enc::MR),
+        insn("add",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       0, Enc::MI),
+        insn("add",     RM64,  Imm8sx,  None,    REX_W,  false, &[0x83],       0, Enc::MI),
+        insn("add",     RM32,  Imm32,   None,    0,      false, &[0x81],       0, Enc::MI),
+        insn("add",     RM64,  Imm32sx, None,    REX_W,  false, &[0x81],       0, Enc::MI),
+        insn("and",     RM8,   Imm8,    None,    0,      false, &[0x80],       4, Enc::MI),
+        insn("and",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       4, Enc::MI),
+        insn("call",    Rel32, None,    None,    0,      false, &[0xe8],       0, Enc::D),
+        insn("cmove",   R32,   RM32,    None,    0,      false, &[0x0f, 0x44], 0, Enc::RM),
+        insn("cmovg",   R32,   RM32,    None,    0,      false, &[0x0f, 0x4f], 0, Enc::RM),
+        insn("cmovg",   R32,   RM32,    None,    0,      false, &[0x0f, 0x4f], 0, Enc::RM),
+        insn("cmovg",   R64,   RM64,    None,    REX_W,  false, &[0x0f, 0x4f], 0, Enc::RM),
+        insn("cmovl",   R32,   RM32,    None,    0,      false, &[0x0f, 0x4c], 0, Enc::RM),
+        insn("cmovne",  R32,   RM32,    None,    0,      false, &[0x0f, 0x45], 0, Enc::RM),
+        insn("cmovnz",  R32,   RM32,    None,    0,      false, &[0x0f, 0x45], 0, Enc::RM),
+        insn("cmovz",   R32,   RM32,    None,    0,      false, &[0x0f, 0x44], 0, Enc::RM),
+        insn("cmp",     RM8,   R8,      None,    0,      false, &[0x38],       0, Enc::MR),
+        insn("cmp",     RM16,  R16,     None,    0,      true,  &[0x39],       0, Enc::MR),
+        insn("cmp",     RM32,  R32,     None,    0,      false, &[0x39],       0, Enc::MR),
+        insn("cmp",     RM64,  R64,     None,    REX_W,  false, &[0x39],       0, Enc::MR),
+        insn("cmp",     R8,    RM8,     None,    0,      false, &[0x3a],       0, Enc::RM),
+        insn("cmp",     RM8,   Imm8,    None,    0,      false, &[0x80],       7, Enc::MI),
+        insn("cmp",     RM64,  Imm8sx,  None,    REX_W,  false, &[0x83],       7, Enc::MI),
+        insn("cmp",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       7, Enc::MI),
+        insn("cmp",     RM32,  Imm32,   None,    0,      false, &[0x81],       7, Enc::MI),
+        insn("dec",     RM32,  None,    None,    0,      false, &[0xff],       1, Enc::M),
+        insn("dec",     RM64,  None,    None,    REX_W,  false, &[0xff],       1, Enc::M),
+        insn("div",     RM32,  None,    None,    0,      false, &[0xf7],       6, Enc::M),
+        insn("imul",    R32,   RM32,    None,    0,      false, &[0x0f, 0xaf], 0, Enc::RM),
+        insn("imul",    R32,   RM32,    Imm8sx,  0,      false, &[0x6b],       0, Enc::RMI),
+        insn("imul",    R32,   RM32,    Imm32,   0,      false, &[0x69],       0, Enc::RMI),
+        insn("imul",    R64,   RM64,    Imm32sx, REX_W,  false, &[0x69],       0, Enc::RMI),
+        insn("inc",     RM32,  None,    None,    0,      false, &[0xff],       0, Enc::M),
+        insn("inc",     RM64,  None,    None,    REX_W,  false, &[0xff],       0, Enc::M),
+        insn("int3",    None,  None,    None,    0,      false, &[0xcc],       0, Enc::ZO),
+        insn("ja",      Rel32, None,    None,    0,      false, &[0x0f, 0x87], 0, Enc::D),
+        insn("jae",     Rel32, None,    None,    0,      false, &[0x0f, 0x83], 0, Enc::D),
+        insn("je",      Rel32, None,    None,    0,      false, &[0x0f, 0x84], 0, Enc::D),
+        insn("jg",      Rel32, None,    None,    0,      false, &[0x0f, 0x8f], 0, Enc::D),
+        insn("jge",     Rel32, None,    None,    0,      false, &[0x0f, 0x8d], 0, Enc::D),
+        insn("jl",      Rel32, None,    None,    0,      false, &[0x0f, 0x8c], 0, Enc::D),
+        insn("jle",     Rel32, None,    None,    0,      false, &[0x0f, 0x8e], 0, Enc::D),
+        insn("jmp",     Rel32, None,    None,    0,      false, &[0xe9],       0, Enc::D),
+        insn("jne",     Rel32, None,    None,    0,      false, &[0x0f, 0x85], 0, Enc::D),
+        insn("jnz",     Rel32, None,    None,    0,      false, &[0x0f, 0x85], 0, Enc::D),
+        insn("jz",      Rel32, None,    None,    0,      false, &[0x0f, 0x84], 0, Enc::D),
+        insn("lea",     R64,   M,       None,    REX_W,  false, &[0x8d],       0, Enc::RM),
+        insn("mov",     RM8,   R8,      None,    0,      false, &[0x88],       0, Enc::MR),
+        insn("mov",     RM16,  R16,     None,    0,      true,  &[0x89],       0, Enc::MR),
+        insn("mov",     RM32,  R32,     None,    0,      false, &[0x89],       0, Enc::MR),
+        insn("mov",     RM64,  R64,     None,    REX_W,  false, &[0x89],       0, Enc::MR),
+        insn("mov",     R8,    RM8,     None,    0,      false, &[0x8a],       0, Enc::RM),
+        insn("mov",     R32,   RM32,    None,    0,      false, &[0x8b],       0, Enc::RM),
+        insn("mov",     R32,   Imm32,   None,    0,      false, &[0xb8],       0, Enc::OI),
+        insn("mov",     R64,   M64,     None,    REX_W,  false, &[0x8b],       0, Enc::RM),
+        insn("mov",     RM8,   Imm8,    None,    0,      false, &[0xc6],       0, Enc::MI),
+        insn("mov",     RM32,  Imm32,   None,    0,      false, &[0xc7],       0, Enc::MI),
+        insn("mov",     RM64,  Imm32sx, None,    REX_W,  false, &[0xc7],       0, Enc::MI),
+        insn("movsxd",  R64,   RM32,    None,    REX_W,  false, &[0x63],       0, Enc::RM),
+        insn("movzx",   R32,   RM8,     None,    0,      false, &[0x0f, 0xb6], 0, Enc::RM),
+        insn("movzx",   R32,   RM16,    None,    0,      false, &[0x0f, 0xb7], 0, Enc::RM),
+        insn("neg",     RM8,   None,    None,    0,      false, &[0xf6],       3, Enc::M),
+        insn("neg",     RM32,  None,    None,    0,      false, &[0xf7],       3, Enc::M),
+        insn("not",     RM8,   None,    None,    0,      false, &[0xf6],       2, Enc::M),
+        insn("or",      RM8,   Imm8,    None,    0,      false, &[0x80],       1, Enc::MI),
+        insn("or",      RM8,   R8,      None,    0,      false, &[0x08],       0, Enc::MR),
+        insn("or",      RM32,  Imm8sx,  None,    0,      false, &[0x83],       1, Enc::MI),
+        insn("or",      RM32,  R32,     None,    0,      false, &[0x09],       0, Enc::MR),
+        insn("pop",     R64,   None,    None,    0,      false, &[0x58],       0, Enc::O),
+        insn("push",    R64,   None,    None,    0,      false, &[0x50],       0, Enc::O),
+        insn("rdrand",  R32,   None,    None,    0,      false, &[0x0f, 0xc7], 6, Enc::M),
+        insn("ret",     None,  None,    None,    0,      false, &[0xc3],       0, Enc::ZO),
+        insn("xor",     RM32,  R32,     None,    0,      false, &[0x31],       0, Enc::MR),
+        insn("sete",    RM8,   None,    None,    0,      false, &[0x0f, 0x94], 0, Enc::M),
+        insn("setl",    RM8,   None,    None,    0,      false, &[0x0f, 0x9c], 0, Enc::M),
+        insn("setle",   RM8,   None,    None,    0,      false, &[0x0f, 0x9e], 0, Enc::M),
+        insn("setnz",   RM8,   None,    None,    0,      false, &[0x0f, 0x95], 0, Enc::M),
+        insn("setz",    RM8,   None,    None,    0,      false, &[0x0f, 0x94], 0, Enc::M),
+        insn("sar",     RM32,  Imm8,    None,    0,      false, &[0xc1],       7, Enc::MI),
+        insn("shl",     RM32,  Imm8,    None,    0,      false, &[0xc1],       4, Enc::MI),
+        insn("shr",     RM32,  One,     None,    0,      false, &[0xd1],       5, Enc::M1),
+        insn("shr",     RM32,  Imm8,    None,    0,      false, &[0xc1],       5, Enc::MI),
+        insn("sub",     RM32,  R32,     None,    0,      false, &[0x29],       0, Enc::MR),
+        insn("sub",     RM64,  R64,     None,    REX_W,  false, &[0x29],       0, Enc::MR),
+        insn("sub",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       5, Enc::MI),
+        insn("sub",     RM64,  Imm32sx, None,    REX_W,  false, &[0x81],       5, Enc::MI),
+        insn("syscall", None,  None,    None,    0,      false, &[0x0f, 0x05], 0, Enc::ZO),
+        insn("test",    RM8,   Imm8,    None,    0,      false, &[0xf6],       0, Enc::MI),
+        insn("test",    RM32,  R32,     None,    0,      false, &[0x85],       0, Enc::MR),
+        insn("test",    Eax,   Imm32,   None,    0,      false, &[0xa9],       0, Enc::I2),
+        insn("xchg",    RM32,  R32,     None,    0,      false, &[0x87],       0, Enc::MR),
+        insn("xchg",    RM64,  R64,     None,    REX_W,  false, &[0x87],       0, Enc::MR),
     ];
 
     for insn in &INSNS {
@@ -709,6 +723,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         op2: Op,
         op3: Op,
         rex: u8,
+        h66: bool,
         opcodes: &'static [u8],
         reg: u8,
         encoding: Enc,
@@ -721,6 +736,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
             rex,
             opcodes,
             reg,
+            h66,
             encoding,
         }
     }
@@ -730,7 +746,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
             None => matches!(arg, Arg::None),
             Eax => matches!(arg, Arg::Eax),
             R8 => matches!(arg, Arg::Reg8(_)),
-            _R16 => matches!(arg, Arg::_Reg16(_)),
+            R16 => matches!(arg, Arg::Reg16(_)),
             R32 => matches!(arg, Arg::Eax | Arg::Reg32(_)),
             R64 => matches!(arg, Arg::Reg64(_)),
             RM8 => {
@@ -741,10 +757,10 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
                 }
             }
             RM16 => {
-                if matches!(other1, Op::_R16 | Op::None) && matches!(other2, Op::_R16 | Op::None) {
-                    matches!(arg, Arg::_Reg16(_) | Arg::Mem16(_) | Arg::Mem(_))
+                if matches!(other1, Op::R16 | Op::None) && matches!(other2, Op::R16 | Op::None) {
+                    matches!(arg, Arg::Reg16(_) | Arg::Mem16(_) | Arg::Mem(_))
                 } else {
-                    matches!(arg, Arg::_Reg16(_) | Arg::Mem16(_))
+                    matches!(arg, Arg::Reg16(_) | Arg::Mem16(_))
                 }
             }
             RM32 => {
@@ -1541,6 +1557,8 @@ fn parse_register(name: &str) -> Option<Arg> {
         Some(Arg::Reg64(idx as u32))
     } else if let Some((idx, _)) = REGS8.iter().enumerate().find(|(_, &reg)| reg == name) {
         Some(Arg::Reg8(idx as u32))
+    } else if let Some((idx, _)) = REGS16.iter().enumerate().find(|(_, &reg)| reg == name) {
+        Some(Arg::Reg16(idx as u32))
     } else {
         None
     }
@@ -1555,6 +1573,7 @@ fn emit_insn<'a>(
 ) -> Result<(), Error> {
     ctx.out.len = insn.opcodes.len();
     ctx.out.rex = insn.rex as u32;
+    ctx.out.h66 = insn.h66;
 
     let off = ctx.out.data.len();
 
@@ -1613,6 +1632,10 @@ fn emit_insn<'a>(
             emit_modrm(arg1.reg(), arg2, ctx)?;
             write_imm(arg3.imm(), insn.op3, &mut ctx.out);
         }
+    }
+
+    if ctx.out.h66 {
+        ctx.out.data.push(0x66);
     }
 
     if ctx.out.rex != 0 {
@@ -1820,7 +1843,7 @@ fn emit_modrm<'a>(mut reg: u32, rm: &Arg<'a>, ctx: &mut Context<'a>) -> Result<(
             }
         }
         Arg::Eax => write_modrm(0b11, reg, 0, out),
-        &Arg::Reg8(mut rm) | &Arg::_Reg16(mut rm) | &Arg::Reg32(mut rm) | &Arg::Reg64(mut rm) => {
+        &Arg::Reg8(mut rm) | &Arg::Reg16(mut rm) | &Arg::Reg32(mut rm) | &Arg::Reg64(mut rm) => {
             if rm >= 8 {
                 rm -= 8;
                 out.rex |= REX_B as u32;

@@ -609,7 +609,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 94] = [
+    static INSNS: [Insn; 99] = [
         insn("add",     RM32,  R32,     None,    0,      false, &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,     None,    REX_W,  false, &[0x01],       0, Enc::MR),
         insn("add",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       0, Enc::MI),
@@ -631,6 +631,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("cmp",     RM16,  R16,     None,    0,      true,  &[0x39],       0, Enc::MR),
         insn("cmp",     RM32,  R32,     None,    0,      false, &[0x39],       0, Enc::MR),
         insn("cmp",     RM64,  R64,     None,    REX_W,  false, &[0x39],       0, Enc::MR),
+        insn("cmp",     R64,   RM64,    None,    REX_W,  false, &[0x3b],       0, Enc::RM),
         insn("cmp",     R8,    RM8,     None,    0,      false, &[0x3a],       0, Enc::RM),
         insn("cmp",     RM8,   Imm8,    None,    0,      false, &[0x80],       7, Enc::MI),
         insn("cmp",     RM64,  Imm8sx,  None,    REX_W,  false, &[0x83],       7, Enc::MI),
@@ -675,10 +676,12 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("neg",     RM8,   None,    None,    0,      false, &[0xf6],       3, Enc::M),
         insn("neg",     RM32,  None,    None,    0,      false, &[0xf7],       3, Enc::M),
         insn("not",     RM8,   None,    None,    0,      false, &[0xf6],       2, Enc::M),
+        insn("or",      Eax,   Imm32,   None,    0,      false, &[0x0d],       0, Enc::I2),
         insn("or",      RM8,   Imm8,    None,    0,      false, &[0x80],       1, Enc::MI),
         insn("or",      RM8,   R8,      None,    0,      false, &[0x08],       0, Enc::MR),
         insn("or",      RM32,  Imm8sx,  None,    0,      false, &[0x83],       1, Enc::MI),
         insn("or",      RM32,  R32,     None,    0,      false, &[0x09],       0, Enc::MR),
+        insn("or",      RM64,  R64,     None,    REX_W,  false, &[0x09],       0, Enc::MR),
         insn("pop",     R64,   None,    None,    0,      false, &[0x58],       0, Enc::O),
         insn("push",    R64,   None,    None,    0,      false, &[0x50],       0, Enc::O),
         insn("rdrand",  R32,   None,    None,    0,      false, &[0x0f, 0xc7], 6, Enc::M),
@@ -691,12 +694,14 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("setz",    RM8,   None,    None,    0,      false, &[0x0f, 0x94], 0, Enc::M),
         insn("sar",     RM32,  Imm8,    None,    0,      false, &[0xc1],       7, Enc::MI),
         insn("shl",     RM32,  Imm8,    None,    0,      false, &[0xc1],       4, Enc::MI),
+        insn("shl",     RM64,  Imm8,    None,    REX_W,  false, &[0xc1],       4, Enc::MI),
         insn("shr",     RM32,  One,     None,    0,      false, &[0xd1],       5, Enc::M1),
         insn("shr",     RM32,  Imm8,    None,    0,      false, &[0xc1],       5, Enc::MI),
         insn("sub",     RM32,  R32,     None,    0,      false, &[0x29],       0, Enc::MR),
         insn("sub",     RM64,  R64,     None,    REX_W,  false, &[0x29],       0, Enc::MR),
         insn("sub",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       5, Enc::MI),
         insn("sub",     RM64,  Imm32sx, None,    REX_W,  false, &[0x81],       5, Enc::MI),
+        insn("sub",     R64,   RM64,    None,    REX_W,  false, &[0x2b],       0, Enc::RM),
         insn("syscall", None,  None,    None,    0,      false, &[0x0f, 0x05], 0, Enc::ZO),
         insn("test",    RM8,   Imm8,    None,    0,      false, &[0xf6],       0, Enc::MI),
         insn("test",    RM32,  Imm32,   None,    0,      false, &[0xf7],       0, Enc::MI),

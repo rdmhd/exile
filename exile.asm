@@ -13,6 +13,14 @@
 .def tm_redraw   0b00000100
 .def tm_sprite   0b00000011
 
+.def e_xpos  0
+.def e_ypos  1
+.def e_type  2
+.def e_flags 3
+
+.def ef_triggered 1 << 0
+.def ef_hurt      1 << 1
+
 .def tile_ground 1
 .def tile_cliff  2
 .def tile_wall   3
@@ -28,7 +36,7 @@
 .def room_min_dim 2
 .def room_max_dim 3
 
-.def fov_distance 5
+.def fov_distance 6
 
 read_xauthority_cookie:
   mov rsi, [rsp]          ; get number of command line args
@@ -237,14 +245,81 @@ mov [rbx], eax
 call generate_map
 call draw_world
 
+sub rsp, 32
+
+; store initial time value
+mov eax, 228 ; clock_gettime
+mov edi, 1 ; CLOCK_MONOTONIC
+lea rsi, [rsp]
+syscall
+mov rax, [rsp+0]
+mov rbx, [rsp+8]
+imul rax, rax, 1000000000
+add rax, rbx
+mov [time], rax
+
 main_loop:
-; read event
-  lea rax, [sockfd]
-  mov edi, [rax]
+  mov eax, 228 ; clock_gettime
+  mov edi, 1 ; CLOCK_MONOTONIC
+  lea rsi, [rsp]
+  syscall
+  mov rax, [rsp+0]
+  mov rbx, [rsp+8]
+  imul rax, rax, 1000000000
+  add rax, rbx
+  mov [time], rax
+
+  mov rbx, [timer]
+  cmp rbx, 0
+  ;cmp m64 [timer], 0 ; TODO: use when asm bug is fixed
+  je >>
+
+  mov rbx, [timer]
+  cmp rax, rbx
+  jl >>
+
+  ; clear entity hurt flags
+  lea rsi, [entities]
+  mov edx, 1
+: and m8 [rsi+rdx*4+e_flags], ~ef_hurt
+  inc edx
+  cmp edx, max_entities
+  jl <
+
+  lea rbx, [timer]
   xor eax, eax
+  mov [timer], rax
+  ;mov m64 [timer], 0 ; TODO: use when asm bug is fixed
+
+  call redraw_tilemap
+  jmp refresh_screen
+
+: mov ebx, [sockfd]
+
+  ; build pollfd structure
+  mov edi, 1
+  shl rdi, 32
+  or rdi, rbx
+  mov [rsp], rdi
+  mov m32 [rsp+0], ebx
+  mov m32 [rsp+4], 1
+
+  ; poll the socket with a timeout
+  mov eax, 7
+  lea rdi, [rsp]
+  mov esi, 1
+  mov rdx, 5
+  syscall
+  cmp eax, 0
+  je main_loop
+
+; read event
+  xor eax, eax
+  mov edi, ebx
   mov rsi, rsp
   mov edx, 32
   syscall
+
   movzx eax, m8 [rsp] ; load event id
   cmp eax, 2 ; keypress event?
   je process_keydown
@@ -415,9 +490,11 @@ draw_distbuf:
   .pop
   ret
 
-; x: eax, y: ebx, sprite: ecx
+; x: eax, y: ebx, sprite: ecx, color: edx
 draw_sprite:
-  .push r8 r9
+  .push r8 r9 r10
+
+  mov r10d, edx
 
   lea rdx, [screen]
   imul eax, eax, tile_size * 4
@@ -437,7 +514,7 @@ draw_sprite:
 : mov ebp, eax
   and ebp, tm_sprite
   jz >
-  mov esi, 0xffffff
+  mov esi, r10d
   mov edi, 0x000000
   cmp ebp, 0x2
   cmove esi, edi
@@ -467,15 +544,19 @@ draw_entity:
   mov r10d, eax
   lea rax, [entities]
   lea r10, [rax+r10*4]
-  movzx eax, m8 [r10+0]
-  movzx ebx, m8 [r10+1]
-  movzx ecx, m8 [r10+2]
+  movzx eax, m8 [r10+e_xpos]
+  movzx ebx, m8 [r10+e_ypos]
+  movzx ecx, m8 [r10+e_type]
   dec ecx
+  mov edx, 0xffffff
+  mov esi, 0xff0000
+  test m8 [r10+e_flags], ef_hurt
+  cmovnz edx, esi
   call draw_sprite
-  cmp m8 [r10+3], 0
-  je >
-  movzx ebx, m8 [r10+0]
-  movzx ecx, m8 [r10+1]
+  test m8 [r10+e_flags], ef_triggered
+  jz >
+  movzx ebx, m8 [r10+e_xpos]
+  movzx ecx, m8 [r10+e_ypos]
   mov edx, 0xff0000
   call draw_point
 : .pop
@@ -518,6 +599,26 @@ draw_tile:
   .pop
   ret
 
+; x0: eax, y0: ebx, x1: ecx, y1: edx, color: esi
+draw_rect:
+  lea rdi, [screen]
+  imul ebp, ebx, screen_pitch
+  add rdi, rbp
+
+  mov ebp, eax
+
+: mov eax, ebp
+: mov [rdi+rax*4], esi
+  inc eax
+  cmp eax, ecx
+  jl <
+  add rdi, screen_pitch
+  inc ebx
+  cmp ebx, edx
+  jl <<
+
+  ret
+
 draw_tilemap:
   .push r8 r9 r10
   lea r8, [tilemap]
@@ -545,8 +646,8 @@ redraw_tilemap:
   xor r10d, r10d ; y counter
 : xor r9d, r9d ; x counter
 : movzx r11d, m8 [r8]
-  test r11b, tm_redraw
-  ;test r11b, tm_walkable
+  ;test r11b, tm_redraw
+  test r11b, tm_walkable
   jz >
   mov eax, r11d
   and eax, tm_sprite
@@ -590,8 +691,6 @@ draw_world:
   mov edx, 0xafa08f
   call draw_number
 
-  ;call draw_distbuf
-
   .pop
   ret
 
@@ -609,18 +708,44 @@ clear_screen:
 ; @ecx: delta y
 ; -> if moved: eax
 move_char:
+  sub rsp, 16
+;   ; clear entity hurt flags
+;   lea rsi, [entities]
+;   mov edx, 1
+; : and m8 [rsi+rdx*4+e_flags], ~ef_hurt
+;   inc edx
+;   cmp edx, max_entities
+;   jl <
+
   mov edx, 1
   call move_entity
   test eax, eax
   jz >>
   cmp eax, 0xff
   je >
+
+  lea rbx, [entities]
+  or m8 [rbx+rax*4+e_flags], ef_hurt
   ; TODO: attack here, entity id is in eax
+
 : call simulate_entities
   call redraw_tilemap
+
+  mov eax, 228 ; clock_gettime
+  mov edi, 1 ; CLOCK_MONOTONIC
+  lea rsi, [rsp]
+  syscall
+  mov rax, [rsp+0]
+  mov rbx, [rsp+8]
+  imul rax, rax, 1000000000
+  add rax, rbx
+  add rax, 200000000
+  mov [timer], rax
+
   ;call draw_distbuf
   mov eax, 1
-: ret
+: add rsp, 16
+  ret
 
 ; delta x: ebx, delta y: ecx, id: edx
 ; -> eax, 0 if could not move, 0xff if moved, blocking entity id othwerwise
@@ -680,40 +805,27 @@ move_entity:
   ret
 
 simulate_entities:
-  .push r8 r9 r10
+  .push r8 r9
   mov r8d, 2
   lea r9, [entities]
 
 .next:
+  cmp m8 [r9+r8*4+2], 0
+  je >>
+
   call compute_distances
 
-  cmp m8 [r9+r8*4+2], 0
-  je >>>
-
-  movzx eax, m8 [r9+r8*4+0]
-  movzx ebx, m8 [r9+r8*4+1]
+  movzx eax, m8 [r9+r8*4+e_xpos]
+  movzx ebx, m8 [r9+r8*4+e_ypos]
   call char_visible
-  mov r10d, eax
-
-  ; redraw indicator if necessary
-  mov bl, [r9+r8*4+3]
-  mov [r9+r8*4+3], al
-  cmp al, bl
-  je >
-  movzx eax, m8 [r9+r8*4+0]
-  movzx ebx, m8 [r9+r8*4+1]
-  imul ebx, ebx, map_width
-  lea rcx, [tilemap]
-  add rcx, rax
-  add rcx, rbx
-  or m8 [rcx], tm_redraw
-
-: test r10d, r10d
+  test eax, eax
   jnz >
+  and m8 [r9+r8*4+e_flags], ~ef_triggered
   mov ebx, r8d
   call move_randomly
   jmp >>
-: mov ebx, r8d
+: or m8 [r9+r8*4+e_flags], ef_triggered
+  mov ebx, r8d
   call move_towards_char
 : inc r8d
   cmp r8d, max_entities
@@ -798,7 +910,11 @@ move_towards_char:
   je .done
   test ecx, ecx
   jnz >
+
   ; TODO: attack here
+  lea rdx, [entities]
+  or m8 [rdx+4+e_flags], ef_hurt
+
   jmp .done
 : mov ebx, esi
   mov ecx, edi
@@ -1291,19 +1407,21 @@ place_entities:
   shl edx, tm_entity_shift
   or m8 [rbx+rcx], dl
 
-  mov [r8+0], r10b
-  mov [r8+1], al
+  mov [r8+e_xpos], r10b
+  mov [r8+e_ypos], al
   add r8, 4
   inc r9d
   cmp r9d, max_enemies + 2
   jl <
 
-  ; set entity types
+  ; set entity types and clear flags
   lea rax, [entities]
-  mov m8 [rax+4+2], entity_char
+  mov m8 [rax+4+e_type], entity_char
+  mov m8 [rax+4+e_flags], 0
 
   mov ebx, 2
-: mov m8 [rax+rbx*4+2], entity_crawler
+: mov m8 [rax+rbx*4+e_type], entity_crawler
+  mov m8 [rax+rbx*4+e_flags], 0
   inc ebx
   cmp ebx, max_enemies + 2
   jl <
@@ -1650,12 +1768,15 @@ map_seed: .i32 0
 rng_state: .i32 0
 sockfd: .i32 0
 
-; each entity has x, y, type and 'sees char' flag
+; each entity has x, y, type and flags
 entities: .res max_entities*4
 
 tilemap: .res screen_width * screen_height
 
 distbuf: .res map_width * map_height
+
+time: .i64 0
+timer: .i64 0
 
 put_image:
   .i8 72             ; opcode

@@ -513,11 +513,58 @@ draw_sprite:
 : mov eax, [rcx+r8*4]
   mov ebx, 16
 : mov ebp, eax
-  and ebp, tm_sprite
+  and ebp, 0b11
   jz >
   mov esi, r10d
   mov edi, 0x000000
   cmp ebp, 0x2
+  cmove esi, edi
+  mov m32 [rdx], esi
+  mov m32 [rdx+4], esi
+  mov m32 [rdx+screen_pitch], esi
+  mov m32 [rdx+screen_pitch+4], esi
+: inc r9d
+  cmp r9d, 12
+  jne >
+  add rdx, (screen_width * 2 - tile_size) * 4
+  xor r9d, r9d
+: add rdx, 8
+  shr eax, 2
+  dec ebx
+  jnz <<<
+  inc r8d
+  cmp r8d, 9
+  jl <<<<
+
+  .pop
+  ret
+
+; x: eax, y: ebx, sprite: ecx
+draw_sprite_negative:
+  .push r8 r9 r10
+
+  mov r10d, edx
+
+  lea rdx, [screen]
+  imul eax, eax, tile_size * 4
+  imul ebx, ebx, tile_size * screen_width * 4
+  add rdx, rax
+  add rdx, rbx
+
+  imul edi, ecx, 9 * 4
+  lea rcx, [sprites]
+  add rcx, rdi
+
+  xor r8d, r8d ; val counter
+  xor r9d, r9d ; x counter
+
+: mov eax, [rcx+r8*4]
+  mov ebx, 16
+: mov ebp, eax
+  and ebp, 0b11
+  mov esi, 0xffffff
+  mov edi, 0x000000
+  cmp ebp, 0x1
   cmove esi, edi
   mov m32 [rdx], esi
   mov m32 [rdx+4], esi
@@ -549,14 +596,15 @@ draw_entity:
   movzx ebx, m8 [r10+e_ypos]
   movzx ecx, m8 [r10+e_type]
   dec ecx
-  mov edx, 0xffffff
-  mov esi, 0xff0000
   test m8 [r10+e_flags], ef_hurt
-  cmovnz edx, esi
+  jz >
+  call draw_sprite_negative
+  jmp >>
+: mov edx, 0xffffff
   call draw_sprite
 
   ; draw triggered indicator
-  cmp m8 [debugmode], 0
+: cmp m8 [debugmode], 0
   je >
   test m8 [r10+e_flags], ef_triggered
   jz >
@@ -747,7 +795,7 @@ move_char:
   mov rbx, [rsp+8]
   imul rax, rax, 1000000000
   add rax, rbx
-  add rax, 200000000
+  add rax, 150 * 1000000
   mov [timer], rax
 
   ;call draw_distbuf
@@ -1766,8 +1814,8 @@ tiles:
   .i16 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0004 0x0000
 
 sprites:
-  .i32 0x8002aa00 0x56a00aaa 0x2955a02a 0xa82996a0 0x5aa829a6 0x2aa9a82a 0x5a29a56a 0xa96aa5a5 0x2aaaa8a6
-  .i32 0x00000000 0xaa800000 0x0aaaa800 0x6a2a95aa 0x5a6a2a55 0x2a556a2a 0x9a29999a 0xa6a829a6 0x02aaa00a
+  .i32 0x00000000 0x560000a8 0x09558002 0x00099600 0x5a0009a6 0x02a98002 0x5809a560 0xa96025a5 0x0aaa8026
+  .i32 0x00000000 0x00000000 0x002a0000 0x60009580 0x5a600255 0x02556002 0x98099998 0xa6a009a6 0x00080002
 
 font:
   .i16 0x7b6f 0x749a 0x73e7 0x79e7 0x49ed 0x79cf 0x7bcf 0x4927 0x7bef 0x49ef

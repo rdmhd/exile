@@ -269,13 +269,10 @@ main_loop:
   add rax, rbx
   mov [time], rax
 
-  mov rbx, [timer]
-  cmp rbx, 0
-  ;cmp m64 [timer], 0 ; TODO: use when asm bug is fixed
+  ; check if the timer was active and if it ran out
+  cmp m64 [timer], 0
   je >>
-
-  mov rbx, [timer]
-  cmp rax, rbx
+  cmp rax, [timer]
   jl >>
 
   ; clear entity hurt flags
@@ -286,10 +283,7 @@ main_loop:
   cmp edx, max_entities
   jl <
 
-  lea rbx, [timer]
-  xor eax, eax
-  mov [timer], rax
-  ;mov m64 [timer], 0 ; TODO: use when asm bug is fixed
+  mov m64 [timer], 0
 
   call redraw_tilemap
   jmp refresh_screen
@@ -339,8 +333,7 @@ main_loop:
 
 refresh_screen:
   ; write put image request
-  lea rax, [sockfd]
-  mov edi, [rax]
+  mov edi, [sockfd]
   mov eax, 1
   lea rsi, [put_image]
   mov edx, (7 + screen_width * screen_height) * 4

@@ -130,8 +130,12 @@ struct Output<'a> {
 impl Output<'_> {
     fn pos(&self) -> i64 {
         let mut pos = (self.data.len() + self.len) as i64;
-        if self.rex != 0 { pos += 1; }
-        if self.h66 { pos += 1; }
+        if self.rex != 0 {
+            pos += 1;
+        }
+        if self.h66 {
+            pos += 1;
+        }
         pos
     }
 }
@@ -187,7 +191,8 @@ struct AnonPatch {
 }
 
 struct Patch<'a> {
-    off: i64,
+    disp_off: i64,
+    insn_off: i64,
     label: LabelName<'a>,
     at: usize,
     disp: i64,
@@ -248,9 +253,7 @@ const REGS8: [&str; 16] = [
     "r15b",
 ];
 
-const REGS16: [&str; 4] = [
-    "ax", "cx", "dx", "bx"
-];
+const REGS16: [&str; 4] = ["ax", "cx", "dx", "bx"];
 
 const REGS32: [&str; 16] = [
     "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d",
@@ -565,12 +568,12 @@ fn apply_patches(
     for patch in patches {
         let mut disp = patch.disp;
         if let Some(off) = resolve_label(&patch.label, labels) {
-            disp += off as i64 - patch.off as i64; // TODO: check that it fits within i32
+            disp += off as i64 - patch.insn_off as i64; // TODO: check that it fits within i32
 
             // TODO: this assumes that the displacement is always 32-bits, for enabling disp8
             // the offset will need to be stored with the patch
             unsafe {
-                (out.data.as_mut_ptr().add(patch.off as usize - 4) as *mut i32)
+                (out.data.as_mut_ptr().add(patch.disp_off as usize) as *mut i32)
                     .write_unaligned(disp as i32);
             };
         } else {
@@ -1605,22 +1608,22 @@ fn emit_insn<'a>(
             }
         }
         Enc::RM => {
-            emit_modrm(arg1.reg(), arg2, ctx)?;
+            emit_modrm(arg1.reg(), arg2, ctx, insn)?;
         }
         Enc::MR => {
-            emit_modrm(arg2.reg(), arg1, ctx)?;
+            emit_modrm(arg2.reg(), arg1, ctx, insn)?;
         }
         Enc::MI => {
-            emit_modrm(insn.reg as u32, arg1, ctx)?;
+            emit_modrm(insn.reg as u32, arg1, ctx, insn)?;
             write_imm(arg2.imm(), insn.op2, &mut ctx.out);
         }
-        Enc::M1 => emit_modrm(insn.reg as u32, arg1, ctx)?,
+        Enc::M1 => emit_modrm(insn.reg as u32, arg1, ctx, insn)?,
         Enc::D => match *arg1 {
-            Arg::Label((label, at)) => emit_rel32_from_label((label, at), 0, ctx)?,
-            Arg::Rel32(off, at) => emit_rel32(off, at, &mut ctx.out)?,
+            Arg::Label((label, at)) => emit_rel32_from_label((label, at), 0, ctx, insn)?,
+            Arg::Rel32(off, at) => emit_rel32(off, at, &mut ctx.out, insn)?,
             Arg::AnonLabel(idx, at) => {
                 if let Some(&off) = ctx.anon_labels.get(idx) {
-                    emit_rel32(off, at, &mut ctx.out)?;
+                    emit_rel32(off, at, &mut ctx.out, insn)?;
                 } else {
                     ctx.out.len += 4; // make space for the immediate value
                     ctx.anon_patches.push(AnonPatch {
@@ -1632,10 +1635,10 @@ fn emit_insn<'a>(
             }
             _ => unreachable!(),
         },
-        Enc::M => emit_modrm(insn.reg as u32, arg1, ctx)?,
+        Enc::M => emit_modrm(insn.reg as u32, arg1, ctx, insn)?,
         Enc::I2 => write_imm(arg2.imm(), insn.op2, &mut ctx.out),
         Enc::RMI => {
-            emit_modrm(arg1.reg(), arg2, ctx)?;
+            emit_modrm(arg1.reg(), arg2, ctx, insn)?;
             write_imm(arg3.imm(), insn.op3, &mut ctx.out);
         }
     }
@@ -1691,8 +1694,17 @@ fn emit_insn<'a>(
     Ok(())
 }
 
-fn emit_rel32(off: i64, at: usize, out: &mut Output) -> Result<(), Error> {
-    let rel = out.pos() + 4 - off;
+fn imm_len(op: Op) -> i64 {
+    match op {
+        Op::Imm8 | Op::Imm8sx => 1,
+        Op::Imm32 | Op::Imm32sx => 4,
+        _ => 0,
+    }
+}
+
+fn emit_rel32(off: i64, at: usize, out: &mut Output, insn: &Insn) -> Result<(), Error> {
+    let insn_end = out.pos() + 4 + imm_len(insn.op1) + imm_len(insn.op2) + imm_len(insn.op3);
+    let rel = insn_end - off;
     if rel <= i32::max_value() as i64 {
         write32((-rel) as u32, out);
         Ok(())
@@ -1705,13 +1717,18 @@ fn emit_rel32_from_label<'a>(
     (label, at): (LabelName<'a>, usize),
     disp: i64,
     ctx: &mut Context<'a>,
+    insn: &Insn,
 ) -> Result<(), Error> {
     if let Some(off) = resolve_label(&label, &ctx.labels) {
-        emit_rel32(off, at, &mut ctx.out)?;
+        emit_rel32(off, at, &mut ctx.out, insn)?;
     } else {
+        let disp_off = ctx.out.pos();
         ctx.out.len += 4; // make space for the immediate value
+        let insn_off = ctx.out.pos() + imm_len(insn.op1) + imm_len(insn.op2) + imm_len(insn.op3);
+
         ctx.patches.push(Patch {
-            off: ctx.out.pos(),
+            disp_off,
+            insn_off,
             label,
             at,
             disp,
@@ -1757,7 +1774,12 @@ fn emit64(val: u64, out: &mut Vec<u8>) {
     out.extend(val);
 }
 
-fn emit_modrm<'a>(mut reg: u32, rm: &Arg<'a>, ctx: &mut Context<'a>) -> Result<(), Error> {
+fn emit_modrm<'a>(
+    mut reg: u32,
+    rm: &Arg<'a>,
+    ctx: &mut Context<'a>,
+    insn: &Insn,
+) -> Result<(), Error> {
     let out = &mut ctx.out;
 
     if reg >= 8 {
@@ -1777,7 +1799,7 @@ fn emit_modrm<'a>(mut reg: u32, rm: &Arg<'a>, ctx: &mut Context<'a>) -> Result<(
                 assert!(addr.index.is_none());
 
                 write_modrm(0b00, reg, 0b101, out);
-                emit_rel32_from_label((label, at), addr.disp, ctx)?;
+                emit_rel32_from_label((label, at), addr.disp, ctx, insn)?;
             } else {
                 assert!(addr.label.is_none()); // TODO: this should be caught by the parser
 

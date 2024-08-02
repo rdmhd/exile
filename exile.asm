@@ -1,9 +1,9 @@
-.def map_width  20
-.def map_height 15
+.def map_width  24
+.def map_height 12
 .def tile_size  24
 
 .def screen_width  map_width * tile_size
-.def screen_height map_height * tile_size
+.def screen_height (map_height + 3) * tile_size
 .def screen_pitch  screen_width*4
 
 .def tm_entity_shift 3
@@ -439,7 +439,7 @@ draw_number:
 
 : movzx edx, m8 [rsp+r9-1]
   lea rdi, [font]
-  movzx edx, m16 [rdi+rdx*2]
+  movzx edx, m16 [rdi+rdx*2+2]
   mov rdi, r10
   xor ebx, ebx ; y counter
 : xor ecx, ecx ; x counter
@@ -462,6 +462,55 @@ draw_number:
   jnz <<<<
 
   add rsp, 8
+  .pop
+  ret
+
+; x: eax, y: ebx, rgb: ecx, str: rdx, len: esi
+draw_text:
+  .push r8 r9
+
+  lea rdi, [screen]
+  imul ebx, ebx, screen_width
+  add eax, ebx
+  shl eax, 2
+  add rdi, rax
+
+  mov r9, rdi
+  mov ebp, ecx
+
+  xor r8d, r8d ; char counter
+: movzx eax, m8 [rdx+r8]
+  sub eax, 33
+  cmp eax, 93
+  ja .next
+  lea rbx, [glyphmap]
+  lea rcx, [font]
+  movzx eax, m8 [rbx+rax]
+  movzx eax, m16 [rcx+rax*2]
+
+  mov rdi, r9
+  xor ebx, ebx ; y counter
+: xor ecx, ecx ; x counter
+: test al, 1
+  jz >
+  mov m32 [rdi+rcx*8], ebp
+  mov m32 [rdi+rcx*8+4], ebp
+  mov m32 [rdi+rcx*8+screen_pitch], ebp
+  mov m32 [rdi+rcx*8+screen_pitch+4], ebp
+: shr eax, 1
+  inc ecx
+  cmp ecx, 3
+  jl <<
+  add rdi, screen_pitch*2
+  inc ebx
+  cmp ebx, 5
+  jl <<<
+.next:
+  add r9, 8*4
+  inc r8d
+  cmp r8d, esi
+  jl <<<<
+
   .pop
   ret
 
@@ -746,6 +795,13 @@ draw_world:
   mov ecx, 4
   mov edx, 0xafa08f
   call draw_number
+
+: mov eax, 8
+  mov ebx, screen_height - 18
+  mov ecx, 0xffffff
+  lea rdx, [text]
+  mov esi, 5
+  call draw_text
 
 : .pop
   ret
@@ -1818,7 +1874,18 @@ sprites:
   .i32 0x00000000 0x00000000 0x002a0000 0x60009580 0x5a600255 0x02556002 0x98099998 0xa6a009a6 0x00080002
 
 font:
-  .i16 0x7b6f 0x749a 0x73e7 0x79e7 0x49ed 0x79cf 0x7bcf 0x4927 0x7bef 0x49ef
+  .i16 0x7fff
+  .i16 0x7b6f 0x749a 0x73e7 0x79e7 0x49ed 0x79cf 0x7bcf 0x4927 0x7bef 0x49ef 0x5f6f 0x3beb
+  .i16 0x724f 0x3b6b 0x73cf 0x13cf 0x7a4f 0x5bed 0x7497 0x7b24 0x5aed 0x7249 0x5b7d 0x5b6f
+  .i16 0x7b6f 0x13ef 0x4f6f 0x576b 0x39ce 0x2497 0x7b6d 0x2b6d 0x5f6d 0x5aad 0x25ed 0x72a7
+
+glyphmap:
+  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1
+  .i8 2 3 4 5 6 7 8 9 10 0 0 0 0 0 0 0
+  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  .i8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  .i8 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26
+  .i8 27 28 29 30 31 32 33 34 35 36 0 0 0 0
 
 map_seed: .i32 0
 rng_state: .i32 0
@@ -1835,6 +1902,8 @@ time: .i64 0
 timer: .i64 0
 
 debugmode: .i8 0
+
+text: .i8 "exile"
 
 put_image:
   .i8 72             ; opcode

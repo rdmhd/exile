@@ -360,7 +360,15 @@ process_keydown:
   je .move_up
   cmp eax, 0x2d ; is it 'k' key
   je .move_up
-  cmp eax, 0x1b ; is it 'r' key
+
+  cmp eax, 0x60 ; is it 'f12' key
+  jne >
+  not m8 [debugmode]
+  call clear_screen
+  call draw_world
+  jmp refresh_screen
+
+: cmp eax, 0x1b ; is it 'r' key
   jne main_loop
   call clear_map
   call generate_map
@@ -546,12 +554,17 @@ draw_entity:
   test m8 [r10+e_flags], ef_hurt
   cmovnz edx, esi
   call draw_sprite
+
+  ; draw triggered indicator
+  cmp m8 [debugmode], 0
+  je >
   test m8 [r10+e_flags], ef_triggered
   jz >
   movzx ebx, m8 [r10+e_xpos]
   movzx ecx, m8 [r10+e_ypos]
   mov edx, 0xff0000
   call draw_point
+
 : .pop
   ret
 
@@ -678,13 +691,15 @@ draw_world:
   cmp r9d, max_entities
   jl <<
 
+  cmp m8 [debugmode], 0
+  je >
   mov eax, [map_seed]
   mov ebx, 4
   mov ecx, 4
   mov edx, 0xafa08f
   call draw_number
 
-  .pop
+: .pop
   ret
 
 clear_screen:
@@ -1770,6 +1785,8 @@ distbuf: .res map_width * map_height
 
 time: .i64 0
 timer: .i64 0
+
+debugmode: .i8 0
 
 put_image:
   .i8 72             ; opcode

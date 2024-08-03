@@ -831,12 +831,7 @@ draw_world:
   mov edx, 0xafa08f
   call draw_number
 
-: mov eax, 8
-  mov ebx, screen_height - 18
-  mov ecx, 0xffffff
-  lea rdx, [text]
-  mov esi, 5
-  call draw_text
+: call draw_ui
 
 : .pop
   ret
@@ -849,6 +844,31 @@ clear_screen:
   inc ebx
   cmp ebx, (screen_width * screen_height * 4)/8
   jl <
+  ret
+
+draw_ui:
+  ; clear part of screen that is covered by ui
+  lea rax, [screen]
+  add rax, map_height * tile_size * screen_pitch
+  xor ebx, ebx
+: mov m64 [rax+rbx*8], 0
+  inc ebx
+  cmp ebx, (screen_pitch * tile_size)/8
+  jl <
+
+  mov eax, 8
+  mov ebx, screen_height - 18
+  mov ecx, 0xffffff
+  lea rdx, [str_hp]
+  mov esi, 2
+  call draw_text
+
+  movzx eax, m8 [entities+4+e_data]
+  and eax, em_hp
+  mov ebx, 32
+  mov ecx, screen_height - 18
+  mov edx, 0xffffff
+  call draw_number
   ret
 
 ; @ebx: delta x
@@ -871,6 +891,7 @@ move_char:
 
 : call simulate_entities
   call redraw_tilemap
+  call draw_ui
 
   mov eax, 228 ; clock_gettime
   mov edi, 1 ; CLOCK_MONOTONIC
@@ -1945,7 +1966,7 @@ timer: .i64 0
 
 debugmode: .i8 0
 
-text: .i8 "exile"
+str_hp: .i8 "hp"
 
 put_image:
   .i8 72             ; opcode

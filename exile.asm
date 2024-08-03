@@ -1095,6 +1095,12 @@ damage_entity:
   mov edx, ecx
   and ecx, em_hp
   dec ecx
+
+  ; set hp to zero if it became negative
+  xor esi, esi
+  cmp ecx, 0
+  cmovl ecx, esi
+
   and edx, ~em_hp
   or ecx, edx
   mov [rbx+rax*4+e_data], cl

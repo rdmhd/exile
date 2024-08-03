@@ -1,9 +1,9 @@
 .def map_width  24
-.def map_height 12
+.def map_height 14
 .def tile_size  24
 
 .def screen_width  map_width * tile_size
-.def screen_height (map_height + 3) * tile_size
+.def screen_height (map_height + 1) * tile_size
 .def screen_pitch  screen_width*4
 
 .def tm_entity_shift 3
@@ -15,18 +15,21 @@
 
 .def e_xpos  0
 .def e_ypos  1
-.def e_type  2
+.def e_data  2
 .def e_flags 3
 
 .def ef_triggered 1 << 0
 .def ef_hurt      1 << 1
 
+.def em_hp   0b00001111
+.def em_type 0b11110000
+
 .def tile_ground 1
 .def tile_cliff  2
 .def tile_wall   3
 
-.def entity_char    1
-.def entity_crawler 2
+.def entity_char    1 << 4
+.def entity_crawler 2 << 4
 
 .def max_entities 8
 .def max_enemies  3 ; must be <= max_entities - 2
@@ -271,17 +274,36 @@ main_loop:
 
   ; check if the timer was active and if it ran out
   cmp m64 [timer], 0
-  je >>
+  je >>>
   cmp rax, [timer]
-  jl >>
+  jl >>>
 
-  ; clear entity hurt flags
+  ; update entities
   lea rsi, [entities]
   mov edx, 1
-: and m8 [rsi+rdx*4+e_flags], ~ef_hurt
-  inc edx
+: movzx ebx, m8 [rsi+rdx*4+e_data]
+  test ebx, em_type
+  jz >
+
+  and m8 [rsi+rdx*4+e_flags], ~ef_hurt
+
+  and ebx, em_hp
+  test ebx, ebx
+  jnz >
+  ; entity is out of hp
+  mov m8 [rsi+rdx*4+e_data], 0
+
+  ; remove entity id from tile
+  movzx eax, m8 [rsi+rdx*4+e_xpos]
+  movzx ebx, m8 [rsi+rdx*4+e_ypos]
+  imul ebx, ebx, map_width
+  add eax, ebx
+  lea rcx, [tilemap]
+  and m8 [rcx+rax], ~tm_entity
+
+: inc edx
   cmp edx, max_entities
-  jl <
+  jl <<
 
   mov m64 [timer], 0
 
@@ -643,7 +665,10 @@ draw_entity:
   lea r10, [rax+r10*4]
   movzx eax, m8 [r10+e_xpos]
   movzx ebx, m8 [r10+e_ypos]
-  movzx ecx, m8 [r10+e_type]
+  movzx ecx, m8 [r10+e_data]
+  shr ecx, 4
+  test ecx, ecx
+  jz .done
   dec ecx
   test m8 [r10+e_flags], ef_hurt
   jz >
@@ -652,17 +677,27 @@ draw_entity:
 : mov edx, 0xffffff
   call draw_sprite
 
-  ; draw triggered indicator
 : cmp m8 [debugmode], 0
-  je >
+  ; draw triggered indicator
+  je .done
   test m8 [r10+e_flags], ef_triggered
   jz >
   movzx ebx, m8 [r10+e_xpos]
   movzx ecx, m8 [r10+e_ypos]
   mov edx, 0xff0000
   call draw_point
+  ; draw hp
+: movzx eax, m8 [r10+e_data]
+  and eax, em_hp
+  movzx ebx, m8 [r10+e_xpos]
+  imul ebx, ebx, tile_size
+  movzx ecx, m8 [r10+e_ypos]
+  imul ecx, ecx, tile_size
+  mov edx, 0xab00bb
+  call draw_number
 
-: .pop
+.done:
+  .pop
   ret
 
 ; sprite: eax, x: ebx, y: ecx
@@ -821,13 +856,10 @@ clear_screen:
 ; -> if moved: eax
 move_char:
   sub rsp, 16
-;   ; clear entity hurt flags
-;   lea rsi, [entities]
-;   mov edx, 1
-; : and m8 [rsi+rdx*4+e_flags], ~ef_hurt
-;   inc edx
-;   cmp edx, max_entities
-;   jl <
+
+  ; TODO: this prevents from attacking when char has 0 hp, remove
+  test m8 [entities+4+e_data], em_hp
+  jz >>
 
   mov edx, 1
   call move_entity
@@ -835,10 +867,7 @@ move_char:
   jz >>
   cmp eax, 0xff
   je >
-
-  lea rbx, [entities]
-  or m8 [rbx+rax*4+e_flags], ef_hurt
-  ; TODO: attack here, entity id is in eax
+  call damage_entity
 
 : call simulate_entities
   call redraw_tilemap
@@ -1023,9 +1052,9 @@ move_towards_char:
   test ecx, ecx
   jnz >
 
-  ; TODO: attack here
-  lea rdx, [entities]
-  or m8 [rdx+4+e_flags], ef_hurt
+  ; attack
+  mov eax, 1
+  call damage_entity
 
   jmp .done
 : mov ebx, esi
@@ -1035,6 +1064,19 @@ move_towards_char:
 
 .done:
   .pop
+  ret
+
+; id: eax
+damage_entity:
+  lea rbx, [entities]
+  or m8 [rbx+rax*4+e_flags], ef_hurt
+  movzx ecx, m8 [rbx+rax*4+e_data]
+  mov edx, ecx
+  and ecx, em_hp
+  dec ecx
+  and edx, ~em_hp
+  or ecx, edx
+  mov [rbx+rax*4+e_data], cl
   ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx, maxdist: esi
@@ -1526,13 +1568,13 @@ place_entities:
   cmp r9d, max_enemies + 2
   jl <
 
-  ; set entity types and clear flags
+  ; set entity type/hp and clear flags
   lea rax, [entities]
-  mov m8 [rax+4+e_type], entity_char
+  mov m8 [rax+4+e_data], entity_char | 10
   mov m8 [rax+4+e_flags], 0
 
   mov ebx, 2
-: mov m8 [rax+rbx*4+e_type], entity_crawler
+: mov m8 [rax+rbx*4+e_data], entity_crawler | 3
   mov m8 [rax+rbx*4+e_flags], 0
   inc ebx
   cmp ebx, max_enemies + 2
@@ -1891,7 +1933,7 @@ map_seed: .i32 0
 rng_state: .i32 0
 sockfd: .i32 0
 
-; each entity has x, y, type and flags
+; each entity has x, y, type/hp and flags
 entities: .res max_entities*4
 
 tilemap: .res screen_width * screen_height

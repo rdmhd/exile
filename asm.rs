@@ -119,6 +119,57 @@ struct Context<'a> {
     verbose: bool,
 }
 
+#[derive(Clone, Copy)]
+struct Token<'a> {
+    tag: TokenTag<'a>,
+    off: usize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum TokenTag<'a> {
+    EOF,
+    Ident(&'a str),
+    Int(i64),
+    String(&'a str),
+    Label(&'a str),
+    LocalLabel(&'a str),
+    AnonLabel,
+    LabelTarget(LabelName<'a>),
+    LocalLabelTarget(&'a str),
+    Comma,
+    NewLine,
+    LeftBracket,
+    RightBracket,
+    LeftParen,
+    RightParen,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    LessThan(usize),
+    GreaterThan(usize),
+    Or,
+    Tilde,
+    Direct(Directive),
+    Mem8,
+    Mem16,
+    Mem32,
+    Mem64,
+    Error,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Directive {
+    I8,
+    I16,
+    I32,
+    I64,
+    Def,
+    Push,
+    Pop,
+    Res,
+}
+
 struct Output<'a> {
     data: &'a mut Vec<u8>,
     buf: [u8; 16],
@@ -140,7 +191,7 @@ impl Output<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct LabelName<'a> {
     global: &'a str,
     local: &'a str,
@@ -161,10 +212,12 @@ struct Label<'a> {
     locals: HashMap<&'a str, i64>,
 }
 
-struct Cursor<'a> {
+struct Input<'a> {
     char: char,
     off: usize,
     iter: CharIndices<'a>,
+    token: Token<'a>,
+    source: &'a str,
 }
 
 #[derive(Clone, Copy)]
@@ -421,13 +474,16 @@ fn fmt_error(err: Error, input: &str, path: &str) -> String {
 }
 
 fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> {
-    let mut cur = Cursor {
+    let mut input = Input {
         char: '\0',
         off: 0,
         iter: input.char_indices(),
+        token: Token {
+            tag: TokenTag::EOF,
+            off: 0,
+        },
+        source: input,
     };
-
-    advance(&mut cur);
 
     let mut ctx = Context {
         labels: HashMap::new(),
@@ -447,32 +503,70 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
         verbose,
     };
 
-    loop {
-        skip_whitespace(&mut cur);
+    read_char(&mut input);
+    advance(&mut input)?;
 
-        if match_char('.', &mut cur) {
-            let label_at = cur.off - 1;
-            if let Some((ident, at)) = match_identifier(&mut cur, &input) {
-                if match_char(':', &mut cur) {
-                    match ctx.labels.get_mut(ctx.curr_label) {
-                        Some(label) => {
-                            let off = ctx.out.data.len() as i64;
-                            if label.locals.insert(ident, off).is_some() {
-                                return error_at(label_at, "label with this name already exists");
-                            };
+    loop {
+        match input.token.tag {
+            TokenTag::Ident(mnemonic) => {
+                let at = input.token.off;
+                advance(&mut input)?;
+
+                let mut arg1 = Arg::None;
+                let mut arg2 = Arg::None;
+                let mut arg3 = Arg::None;
+
+                if let Some(arg) = match_argument(
+                    &mut input,
+                    ctx.curr_label,
+                    &ctx.anon_labels,
+                    &mut ctx.constants,
+                )? {
+                    arg1 = arg;
+
+                    if match_token(TokenTag::Comma, &mut input)? {
+                        if let Some(arg) = match_argument(
+                            &mut input,
+                            ctx.curr_label,
+                            &ctx.anon_labels,
+                            &mut ctx.constants,
+                        )? {
+                            arg2 = arg;
+                        } else {
+                            return error_at(input.token.off, "expected argument");
                         }
-                        None => return error_at(label_at, "local label declared in global scope"),
+
+                        if match_token(TokenTag::Comma, &mut input)? {
+                            if let Some(arg) = match_argument(
+                                &mut input,
+                                ctx.curr_label,
+                                &ctx.anon_labels,
+                                &mut ctx.constants,
+                            )? {
+                                arg3 = arg;
+                            } else {
+                                return error_at(input.token.off, "expected argument");
+                            }
+                        }
                     }
-                    continue;
-                } else {
-                    skip_whitespace(&mut cur);
-                    asm_directive(ident, at, &mut cur, input, &mut ctx)?;
                 }
-            } else {
-                return error_at(cur.off, "expected directive name");
+
+                let Some(insn) = choose_insn(mnemonic, &arg1, &arg2, &arg3) else {
+                    if verbose {
+                        eprintln!("?? {mnemonic} {arg1}, {arg2}, {arg3}");
+                    }
+                    return error_at(at, "unknown instruction");
+                };
+
+                emit_insn(&insn, &arg1, &arg2, &arg3, &mut ctx)?;
+
+                match input.token.tag {
+                    TokenTag::NewLine => advance(&mut input)?,
+                    TokenTag::EOF => break,
+                    _ => return error_at(input.token.off, "invalid input"),
+                }
             }
-        } else if let Some((ident, at)) = match_identifier(&mut cur, input) {
-            if match_char(':', &mut cur) {
+            TokenTag::Label(name) => {
                 apply_anon_patches(&mut ctx.anon_patches, &ctx.anon_labels, &mut ctx.out)?;
 
                 let label = Label {
@@ -480,53 +574,356 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
                     locals: HashMap::new(),
                 };
 
-                if ctx.labels.insert(ident, label).is_some() {
-                    return error_at(at, "label with this name already exists");
+                if ctx.labels.insert(name, label).is_some() {
+                    return error_at(input.token.off, "label with this name already exists");
                 }
 
-                ctx.curr_label = ident;
+                ctx.curr_label = name;
                 ctx.anon_labels.clear();
-                skip_whitespace(&mut cur);
+                advance(&mut input)?;
                 continue;
-            } else {
-                skip_whitespace(&mut cur);
-                asm_instruction((ident, at), &mut cur, input, &mut ctx)?;
             }
-        } else if match_char(':', &mut cur) {
-            if ctx.curr_label.is_empty() {
-                return error_at(
-                    cur.off - 1,
-                    "anonymous label must be declared in local scope",
-                );
+            TokenTag::LocalLabel(name) => {
+                let at = input.token.off;
+                advance(&mut input)?;
+                match ctx.labels.get_mut(ctx.curr_label) {
+                    Some(label) => {
+                        let off = ctx.out.data.len() as i64;
+                        if label.locals.insert(name, off).is_some() {
+                            return error_at(at, "label with this name already exists");
+                        };
+                    }
+                    None => return error_at(at, "local label declared in global scope"),
+                }
+                continue;
             }
-            ctx.anon_labels.push(ctx.out.data.len() as i64);
-            continue;
-        }
-
-        skip_whitespace(&mut cur);
-
-        // optionally skip comment at end of line
-        if match_char(';', &mut cur) {
-            while cur.char != '\n' && cur.off != input.len() {
-                advance(&mut cur);
+            TokenTag::Direct(direct) => {
+                let at = input.token.off;
+                advance(&mut input)?;
+                asm_directive(direct, &mut input, &mut ctx, at)?;
             }
+            TokenTag::AnonLabel => {
+                if ctx.curr_label.is_empty() {
+                    return error_at(
+                        input.token.off,
+                        "anonymous label must be declared in local scope",
+                    );
+                }
+                ctx.anon_labels.push(ctx.out.data.len() as i64);
+                advance(&mut input)?;
+            }
+            TokenTag::NewLine => advance(&mut input)?,
+            TokenTag::EOF => break,
+            _ => return error_at(input.token.off, "invalid input"),
         }
-
-        if cur.char == '\n' {
-            (cur.off, cur.char) = cur.iter.next().unwrap_or_default();
-        } else {
-            break;
-        }
-    }
-
-    if cur.char != '\0' || cur.iter.as_str().len() != 0 {
-        return error_at(cur.off, "invalid input");
     }
 
     apply_anon_patches(&mut ctx.anon_patches, &ctx.anon_labels, &mut ctx.out)?;
     apply_patches(&ctx.labels, &ctx.patches, &mut ctx.out)?;
 
     Ok(())
+}
+
+fn read_char(input: &mut Input) {
+    (input.off, input.char) = input.iter.next().unwrap_or((input.iter.offset(), '\0'));
+}
+
+fn checked_digit(val: u64, increase: u64, scale: u64, off: usize) -> Result<u64, Error> {
+    if let Some(val) = val
+        .checked_mul(scale)
+        .and_then(|val| val.checked_add(increase))
+    {
+        Ok(val)
+    } else {
+        error_at(off, "overflow")
+    }
+}
+
+fn advance<'a>(input: &mut Input) -> Result<(), Error> {
+    let mut off;
+
+    fn read_ident(input: &mut Input) {
+        while matches!(input.char, 'a'..='z' | '0' ..='9' | '_') {
+            read_char(input);
+        }
+    }
+
+    let tag = loop {
+        off = input.off;
+        let char = input.char;
+
+        read_char(input);
+
+        match char {
+            'a'..='z' => {
+                read_ident(input);
+                let ident = &input.source[off..input.off];
+                if input.char == ':' {
+                    read_char(input);
+                    break TokenTag::Label(ident);
+                } else if input.char == '.' {
+                    read_char(input);
+                    let beg = input.off;
+                    read_ident(input);
+                    let local = &input.source[beg..input.off];
+                    break TokenTag::LabelTarget(LabelName {
+                        global: ident,
+                        local,
+                    });
+                } else {
+                    match ident {
+                        "m8" => break TokenTag::Mem8,
+                        "m16" => break TokenTag::Mem16,
+                        "m32" => break TokenTag::Mem32,
+                        "m64" => break TokenTag::Mem64,
+                        _ => break TokenTag::Ident(ident),
+                    }
+                }
+            }
+            '0' => {
+                if input.char == 'b' {
+                    read_char(input);
+                    let mut val = 0;
+                    while input.char == '0' || input.char == '1' {
+                        val = checked_digit(val, input.char as u64 - '0' as u64, 2, input.off)?;
+                        read_char(input);
+                    }
+                    break TokenTag::Int(val as i64);
+                } else if input.char == 'x' {
+                    read_char(input);
+                    let mut val = 0;
+
+                    loop {
+                        if matches!(input.char, '0'..='9') {
+                            val =
+                                checked_digit(val, input.char as u64 - '0' as u64, 16, input.off)?;
+                        } else if matches!(input.char, 'a'..='f') {
+                            val = checked_digit(
+                                val,
+                                input.char as u64 - 'a' as u64 + 10,
+                                16,
+                                input.off,
+                            )?;
+                        } else {
+                            break;
+                        }
+                        read_char(input);
+                    }
+                    break TokenTag::Int(val as i64);
+                } else {
+                    let mut val = 0;
+                    while matches!(input.char, '0'..='9') {
+                        val = checked_digit(val, input.char as u64 - '0' as u64, 10, input.off)?;
+                        read_char(input);
+                    }
+                    break TokenTag::Int(val as i64);
+                }
+            }
+            '1'..='9' => {
+                let mut val = char as u64 - '0' as u64;
+                while matches!(input.char, '0'..='9') {
+                    val = checked_digit(val, input.char as u64 - '0' as u64, 10, input.off)?;
+                    read_char(input);
+                }
+                break TokenTag::Int(val as i64);
+            }
+            '.' => {
+                let beg = input.off;
+                if !matches!(input.char, 'a'..='z') {
+                    return error_at(input.off, "expected identifier");
+                }
+                read_char(input);
+                read_ident(input);
+                let ident = &input.source[beg..input.off];
+
+                if input.char == ':' {
+                    read_char(input);
+                    break TokenTag::LocalLabel(ident);
+                } else {
+                    match ident {
+                        "i8" => break TokenTag::Direct(Directive::I8),
+                        "i16" => break TokenTag::Direct(Directive::I16),
+                        "i32" => break TokenTag::Direct(Directive::I32),
+                        "i64" => break TokenTag::Direct(Directive::I64),
+                        "def" => break TokenTag::Direct(Directive::Def),
+                        "push" => break TokenTag::Direct(Directive::Push),
+                        "pop" => break TokenTag::Direct(Directive::Pop),
+                        "res" => break TokenTag::Direct(Directive::Res),
+                        _ => break TokenTag::LocalLabelTarget(ident),
+                    }
+                }
+            }
+            '"' => {
+                let beg = input.off;
+                while input.char != '"' {
+                    if input.off == input.source.len() {
+                        return error_at(input.off, "unterminated string");
+                    }
+                    read_char(input);
+                }
+                let s = &input.source[beg..input.off];
+                read_char(input); // closing '"'
+                break TokenTag::String(s);
+            }
+            ',' => break TokenTag::Comma,
+            '\n' => break TokenTag::NewLine,
+            ':' => break TokenTag::AnonLabel,
+            '+' => break TokenTag::Plus,
+            '-' => break TokenTag::Minus,
+            '*' => break TokenTag::Star,
+            '/' => break TokenTag::Slash,
+            '|' => break TokenTag::Or,
+            '~' => break TokenTag::Tilde,
+            '[' => break TokenTag::LeftBracket,
+            ']' => break TokenTag::RightBracket,
+            '(' => break TokenTag::LeftParen,
+            ')' => break TokenTag::RightParen,
+            '<' => {
+                let mut count = 1;
+                while input.char == '<' {
+                    count += 1;
+                    read_char(input);
+                }
+                break TokenTag::LessThan(count);
+            }
+            '>' => {
+                let mut count = 1;
+                while input.char == '>' {
+                    count += 1;
+                    read_char(input);
+                }
+                break TokenTag::GreaterThan(count);
+            }
+            ' ' | '\t' => continue,
+            ';' => {
+                read_char(input);
+                while input.char != '\n' && input.off != input.source.len() {
+                    read_char(input);
+                }
+                continue;
+            }
+            _ => {
+                if char == '\0' && off == input.source.len() {
+                    break TokenTag::EOF;
+                } else {
+                    break TokenTag::Error;
+                }
+            }
+        }
+    };
+
+    input.token = Token { tag, off };
+    Ok(())
+}
+
+fn match_token(tag: TokenTag, input: &mut Input) -> Result<bool, Error> {
+    if input.token.tag == tag {
+        advance(input)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn expect_token<'a>(
+    tag: TokenTag,
+    input: &mut Input<'a>,
+    msg: &'static str,
+) -> Result<Token<'a>, Error> {
+    if input.token.tag == tag {
+        let token = input.token;
+        advance(input)?;
+        Ok(token)
+    } else {
+        error_at(input.token.off, msg)
+    }
+}
+
+fn match_argument<'a>(
+    input: &mut Input<'a>,
+    label: &'a str,
+    anon_labels: &[i64],
+    constants: &HashMap<&str, i64>,
+) -> Result<Option<Arg<'a>>, Error> {
+    if let TokenTag::Ident(ident) = input.token.tag {
+        let off = input.token.off;
+        advance(input)?;
+        if let Some(reg) = parse_register(ident) {
+            return Ok(Some(reg));
+        } else if let Some(&int) = constants.get(ident) {
+            let mut val = int;
+            while let Some((op, prec)) = match_operator(input) {
+                advance(input)?;
+                val = parse_expression(val, op, prec, input, constants)?;
+            }
+            return Ok(Some(Arg::Imm(val)));
+        } else {
+            return Ok(Some(Arg::Label((
+                LabelName {
+                    global: ident,
+                    local: "",
+                },
+                off,
+            ))));
+        }
+    }
+
+    if let Some(val) = match_expression(input, constants)? {
+        return Ok(Some(Arg::Imm(val)));
+    }
+
+    let at = input.token.off;
+
+    if match_token(TokenTag::LeftBracket, input)? {
+        let addr = parse_address(input, constants, at)?;
+        return Ok(Some(Arg::Mem(addr)));
+    }
+
+    if match_token(TokenTag::Mem8, input)? {
+        expect_token(TokenTag::LeftBracket, input, "expected '['")?;
+        return Ok(Some(Arg::Mem8(parse_address(input, constants, at)?)));
+    }
+
+    if match_token(TokenTag::Mem16, input)? {
+        expect_token(TokenTag::LeftBracket, input, "expected '['")?;
+        return Ok(Some(Arg::Mem16(parse_address(input, constants, at)?)));
+    }
+
+    if match_token(TokenTag::Mem32, input)? {
+        expect_token(TokenTag::LeftBracket, input, "expected '['")?;
+        return Ok(Some(Arg::Mem32(parse_address(input, constants, at)?)));
+    }
+
+    if match_token(TokenTag::Mem64, input)? {
+        expect_token(TokenTag::LeftBracket, input, "expected '['")?;
+        return Ok(Some(Arg::Mem64(parse_address(input, constants, at)?)));
+    }
+
+    if let TokenTag::LessThan(delta) = input.token.tag {
+        advance(input)?;
+        if delta <= anon_labels.len() {
+            let off = unsafe { *anon_labels.get_unchecked(anon_labels.len() - delta) };
+            return Ok(Some(Arg::Rel32(off, at)));
+        } else {
+            return error_at(at, "trying to jump to a non-existent anonymous label");
+        }
+    }
+
+    if let TokenTag::GreaterThan(delta) = input.token.tag {
+        advance(input)?;
+        return Ok(Some(Arg::AnonLabel(anon_labels.len() + delta - 1, at)));
+    }
+
+    if let TokenTag::LocalLabelTarget(name) = input.token.tag {
+        advance(input)?;
+        let label = LabelName {
+            global: label,
+            local: name,
+        };
+        return Ok(Some(Arg::Label((label, at))));
+    }
+
+    Ok(None)
 }
 
 #[allow(dead_code)]
@@ -830,69 +1227,6 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     }
 }
 
-fn asm_instruction<'a>(
-    (mnemonic, at): (&str, usize),
-    cur: &mut Cursor,
-    input: &'a str,
-    ctx: &mut Context<'a>,
-) -> Result<(), Error> {
-    let mut arg1 = Arg::None;
-    let mut arg2 = Arg::None;
-    let mut arg3 = Arg::None;
-
-    if let Some(arg) = match_argument(
-        cur,
-        input,
-        ctx.curr_label,
-        &ctx.anon_labels,
-        &mut ctx.constants,
-    )? {
-        arg1 = arg;
-        skip_whitespace(cur);
-
-        if match_char(',', cur) {
-            skip_whitespace(cur);
-            if let Some(arg) = match_argument(
-                cur,
-                input,
-                ctx.curr_label,
-                &ctx.anon_labels,
-                &mut ctx.constants,
-            )? {
-                arg2 = arg;
-            } else {
-                return error_at(cur.off, "expected operand after ','");
-            }
-
-            if match_char(',', cur) {
-                skip_whitespace(cur);
-                if let Some(arg) = match_argument(
-                    cur,
-                    input,
-                    ctx.curr_label,
-                    &ctx.anon_labels,
-                    &mut ctx.constants,
-                )? {
-                    arg3 = arg;
-                } else {
-                    return error_at(cur.off, "expected operand after ','");
-                }
-            }
-        }
-    }
-
-    if let Some(insn) = choose_insn(mnemonic, &arg1, &arg2, &arg3) {
-        emit_insn(insn, &arg1, &arg2, &arg3, ctx)?;
-    } else {
-        if ctx.verbose {
-            eprintln!("?? {mnemonic} {arg1}, {arg2}, {arg3}");
-        }
-        return error_at(at, "unknown instruction");
-    }
-
-    Ok(())
-}
-
 fn is_valid8(val: i64) -> bool {
     if val > 0 {
         val <= u8::max_value() as i64
@@ -918,116 +1252,126 @@ fn is_valid32(val: i64) -> bool {
 }
 
 fn asm_directive<'a>(
-    name: &str,
-    at: usize,
-    cur: &mut Cursor,
-    input: &'a str,
+    direct: Directive,
+    input: &mut Input<'a>,
     ctx: &mut Context<'a>,
+    at: usize,
 ) -> Result<(), Error> {
-    match name {
-        "i8" => {
+    match direct {
+        Directive::I8 => {
+            let off = input.token.off;
+            if let TokenTag::String(str) = input.token.tag {
+                advance(input)?;
+                ctx.out.data.extend_from_slice(str.as_bytes());
+            } else if let Some(int) = match_expression(input, &ctx.constants)? {
+                if is_valid8(int) {
+                    ctx.out.data.push(int as u8);
+                } else {
+                    return error_at(off, "value doesn't fit in 8 bits");
+                }
+            } else {
+                return error_at(input.token.off, "expected expression or string");
+            }
+
             loop {
-                if match_char('"', cur) {
-                    loop {
-                        if match_char('"', cur) {
-                            break;
-                        } else if match_char('\n', cur) {
-                            return error_at(cur.off - 1, "unterminated string literal");
-                        } else if cur.iter.as_str().len() == 0 {
-                            return error_at(cur.off + 1, "unterminated string literal");
-                        } else {
-                            ctx.out.data.push(cur.char as u8); // TODO: enable utf8 chars longer than
-                                                               // one byte
-                            advance(cur);
-                        }
-                    }
-                } else if let Some(mut int) = match_expression(cur, input, &mut ctx.constants)? {
-                    loop {
-                        if is_valid8(int) {
-                            ctx.out.data.push(int as u8);
-                        } else {
-                            return error_at(cur.off, "value doesn't fit in 16 bits");
-                        }
-                        skip_whitespace(cur);
-                        if let Some(x) = match_expression(cur, input, &mut ctx.constants)? {
-                            int = x;
-                        } else {
-                            break;
-                        }
+                let off = input.token.off;
+                if let TokenTag::String(str) = input.token.tag {
+                    advance(input)?;
+                    ctx.out.data.extend_from_slice(str.as_bytes());
+                } else if let Some(int) = match_expression(input, &ctx.constants)? {
+                    if is_valid8(int) {
+                        ctx.out.data.push(int as u8);
+                    } else {
+                        return error_at(off, "value doesn't fit in 8 bits");
                     }
                 } else {
-                    return error_at(cur.off, "expected integer literal or string");
-                }
-
-                skip_whitespace(cur);
-
-                if at_stmt_terminator(cur) {
                     break;
                 }
             }
         }
-        "i16" | "i32" | "i64" => {
-            if let Some(mut int) = match_expression(cur, input, &mut ctx.constants)? {
-                loop {
-                    match name {
-                        "i16" => {
-                            if is_valid16(int) {
-                                emit16(int as u16, &mut ctx.out.data)
-                            } else {
-                                return error_at(cur.off, "value doesn't fit in 16 bits");
-                            }
-                        }
-                        "i32" => {
-                            if is_valid32(int) {
-                                emit32(int as u32, &mut ctx.out.data)
-                            } else {
-                                return error_at(cur.off, "value doesn't fit in 32 bits");
-                            }
-                        }
-                        "i64" => {
-                            // should be valid as long as the value was checked for overflow
-                            emit64(int as u64, &mut ctx.out.data)
-                        }
-                        _ => unreachable!(),
-                    }
-                    skip_whitespace(cur);
-                    if let Some(x) = match_expression(cur, input, &mut ctx.constants)? {
-                        int = x;
-                    } else {
-                        break;
-                    }
+        Directive::I16 => {
+            let at = input.token.off;
+            if let Some(int) = match_expression(input, &ctx.constants)? {
+                if is_valid16(int) {
+                    emit16(int as u16, &mut ctx.out.data);
+                } else {
+                    return error_at(at, "value doesn't fit in 16 bits");
                 }
             } else {
-                return error_at(cur.off, "expected expression");
+                return error_at(at, "expected expression");
             }
-        }
-        "res" => {
-            if let Some(int) = match_expression(cur, input, &mut ctx.constants)? {
-                let len = ctx.out.data.len() + int as usize;
-                ctx.out.data.resize(len, 0);
-            } else {
-                return error_at(cur.off, "expected number of bytes to reserve");
-            }
-        }
-        "def" => {
-            if let Some((ident, at)) = match_identifier(cur, input) {
-                skip_whitespace(cur);
-                if let Some(int) = match_expression(cur, input, &mut ctx.constants)? {
-                    if ctx.constants.try_insert(ident, int).is_err() {
-                        return error_at(at, "constant already defined");
+
+            loop {
+                let at = input.token.off;
+                if let Some(int) = match_expression(input, &ctx.constants)? {
+                    if is_valid16(int) {
+                        emit16(int as u16, &mut ctx.out.data);
+                    } else {
+                        return error_at(at, "value doesn't fit in 16 bits");
                     }
                 } else {
-                    return error_at(cur.off, "expected constant value");
+                    break;
                 }
-            } else {
-                return error_at(cur.off, "expected constant name");
             }
         }
-        "push" => {
+        Directive::I32 => {
+            let at = input.token.off;
+            if let Some(int) = match_expression(input, &ctx.constants)? {
+                if is_valid32(int) {
+                    emit32(int as u32, &mut ctx.out.data);
+                } else {
+                    return error_at(at, "value doesn't fit in 32 bits");
+                }
+            } else {
+                return error_at(at, "expected expression");
+            }
+
+            loop {
+                let at = input.token.off;
+                if let Some(int) = match_expression(input, &ctx.constants)? {
+                    if is_valid32(int) {
+                        emit32(int as u32, &mut ctx.out.data);
+                    } else {
+                        return error_at(at, "value doesn't fit in 32 bits");
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        Directive::I64 => {
+            if let Some(int) = match_expression(input, &ctx.constants)? {
+                emit64(int as u64, &mut ctx.out.data);
+            } else {
+                return error_at(input.token.off, "expected expression");
+            }
+
+            while let Some(int) = match_expression(input, &ctx.constants)? {
+                emit64(int as u64, &mut ctx.out.data);
+            }
+        }
+        Directive::Def => {
+            if let TokenTag::Ident(ident) = input.token.tag {
+                let off = input.token.off;
+                advance(input)?;
+                if let Some(val) = match_expression(input, &mut ctx.constants)? {
+                    if ctx.constants.try_insert(ident, val).is_err() {
+                        return error_at(off, "constant already defined");
+                    }
+                } else {
+                    return error_at(input.token.off, "expected constant value");
+                }
+            } else {
+                return error_at(input.token.off, "expected constant name");
+            }
+        }
+        Directive::Push => {
             if !ctx.pushed_regs.is_empty() {
                 return error_at(at, "there are already pushed registers");
             }
-            while let Some((ident, at)) = match_identifier(cur, input) {
+            while let TokenTag::Ident(ident) = input.token.tag {
+                let at = input.token.off;
+                advance(input)?;
                 if let Some(Arg::Reg64(reg)) = parse_register(ident) {
                     if !ctx.pushed_regs.contains(&(reg as u8)) {
                         ctx.pushed_regs.push(reg as u8);
@@ -1040,13 +1384,12 @@ fn asm_directive<'a>(
                 } else {
                     return error_at(at, "expected 64-bit register");
                 }
-                skip_whitespace(cur);
             }
             if ctx.pushed_regs.is_empty() {
                 return error_at(at, "must push at least one register");
             }
         }
-        "pop" => {
+        Directive::Pop => {
             if ctx.pushed_regs.is_empty() {
                 return error_at(at, "there are no registers to pop");
             }
@@ -1059,8 +1402,16 @@ fn asm_directive<'a>(
 
             ctx.pushed_regs.clear();
         }
-        _ => return error_at(at, "unknown directive"),
+        Directive::Res => {
+            if let Some(int) = match_expression(input, &mut ctx.constants)? {
+                let len = ctx.out.data.len() + int as usize;
+                ctx.out.data.resize(len, 0);
+            } else {
+                return error_at(input.token.off, "expected number of bytes to reserve");
+            }
+        }
     }
+
     Ok(())
 }
 
@@ -1068,228 +1419,84 @@ fn error_at<T>(at: usize, msg: &'static str) -> Result<T, Error> {
     Err(Error { at, msg })
 }
 
-fn advance(cur: &mut Cursor) {
-    (cur.off, cur.char) = cur.iter.next().unwrap_or((cur.iter.offset(), '\0'))
-}
-
-fn peek(cur: &mut Cursor) -> char {
-    cur.iter.clone().next().unwrap_or((0, '\0')).1
-}
-
-fn skip_whitespace(cur: &mut Cursor) {
-    while cur.char == ' ' || cur.char == '\t' {
-        advance(cur);
-    }
-}
-
-fn at_stmt_terminator(cur: &Cursor) -> bool {
-    cur.char == '\n' || cur.char == ';' || cur.iter.as_str().len() == 0
-}
-
-fn match_char(char: char, cur: &mut Cursor) -> bool {
-    if cur.char == char {
-        advance(cur);
-        true
-    } else {
-        false
-    }
-}
-
-fn match_identifier<'a>(cur: &mut Cursor, input: &'a str) -> Option<(&'a str, usize)> {
-    if cur.char >= 'a' && cur.char <= 'z' {
-        let beg = cur.off;
-        advance(cur);
-        while (cur.char >= 'a' && cur.char <= 'z')
-            || (cur.char >= '0' && cur.char <= '9')
-            || cur.char == '_'
-        {
-            advance(cur);
+fn match_primary(input: &mut Input, constants: &HashMap<&str, i64>) -> Result<Option<i64>, Error> {
+    match input.token.tag {
+        TokenTag::Int(int) => {
+            advance(input)?;
+            return Ok(Some(int));
         }
-        Some((&input[beg..cur.off], beg))
-    } else {
-        None
-    }
-}
-
-fn match_integer(cur: &mut Cursor) -> Result<Option<(i64, usize)>, Error> {
-    let at = cur.off;
-
-    // TODO: handle overflows
-
-    if cur.char == '0' {
-        advance(cur);
-
-        if cur.char == 'x' {
-            advance(cur);
-
-            fn parse_hexdigit(char: char) -> Option<u64> {
-                if char >= '0' && char <= '9' {
-                    Some(char as u64 - '0' as u64)
-                } else if char >= 'a' && char <= 'f' {
-                    Some(char as u64 - 'a' as u64 + 10)
+        TokenTag::Ident(ident) => {
+            let off = input.token.off;
+            advance(input)?;
+            if let Some(&int) = constants.get(ident) {
+                return Ok(Some(int));
+            } else {
+                return error_at(off, "undefined constant");
+            }
+        }
+        TokenTag::Minus => {
+            let at = input.token.off;
+            advance(input)?;
+            if let Some(int) = match_primary(input, constants)? {
+                if let Some(val) = int.checked_neg() {
+                    return Ok(Some(val));
                 } else {
-                    None
+                    return error_at(at, "overflow");
                 }
             }
-
-            if let Some(n) = parse_hexdigit(cur.char) {
-                let mut int = n;
-                advance(cur);
-                while let Some(n) = parse_hexdigit(cur.char) {
-                    int = int * 16 + n;
-                    advance(cur);
-                }
-                Ok(Some((int as i64, at)))
-            } else {
-                error_at(cur.off, "expected hexadecimal digit")
+        }
+        TokenTag::Tilde => {
+            advance(input)?;
+            if let Some(int) = match_primary(input, constants)? {
+                return Ok(Some(!int));
             }
-        } else if cur.char == 'b' {
-            advance(cur);
-            if cur.char == '0' || cur.char == '1' {
-                let mut int = cur.char as i64 - '0' as i64;
-                advance(cur);
-                while cur.char == '0' || cur.char == '1' {
-                    int = (int << 1) | (cur.char as i64 - '0' as i64);
-                    advance(cur);
-                }
-                Ok(Some((int as i64, at)))
-            } else {
-                error_at(cur.off, "expected binary digit")
-            }
-        } else {
-            let mut int = 0;
-            while cur.char >= '0' && cur.char <= '9' {
-                int = int * 10 + (cur.char as u64 - '0' as u64);
-                advance(cur);
-            }
-            Ok(Some((int as i64, at)))
         }
-    } else if cur.char >= '1' && cur.char <= '9' {
-        let mut int = cur.char as u64 - '0' as u64;
-        advance(cur);
-        while cur.char >= '0' && cur.char <= '9' {
-            int = int * 10 + (cur.char as u64 - '0' as u64);
-            advance(cur);
-        }
-        Ok(Some((int as i64, at)))
-    } else {
-        Ok(None)
-    }
-}
-
-fn parse_label<'a>(
-    (global, at): (&'a str, usize),
-    cur: &mut Cursor,
-    input: &'a str,
-) -> Result<(LabelName<'a>, usize), Error> {
-    if match_char('.', cur) {
-        if let Some((local, _)) = match_identifier(cur, input) {
-            Ok((LabelName { global, local }, at))
-        } else {
-            return error_at(cur.off, "expected local label name");
-        }
-    } else {
-        Ok((LabelName { global, local: "" }, at))
-    }
-}
-
-fn match_primary(
-    cur: &mut Cursor,
-    input: &str,
-    constants: &HashMap<&str, i64>,
-) -> Result<Option<i64>, Error> {
-    if let Some((int, _)) = match_integer(cur)? {
-        return Ok(Some(int));
-    } else if let Some(int) = match_constant(cur, input, constants)? {
-        return Ok(Some(int));
-    } else if match_char('-', cur) {
-        if let Some(int) = match_primary(cur, input, constants)? {
-            return Ok(Some(-int));
-        }
-    } else if match_char('~', cur) {
-        if let Some(int) = match_primary(cur, input, constants)? {
-            return Ok(Some(!int));
-        }
-    } else if match_char('(', cur) {
-        if let Some(int) = match_expression(cur, input, constants)? {
-            if match_char(')', cur) {
+        TokenTag::LeftParen => {
+            advance(input)?;
+            if let Some(int) = match_expression(input, constants)? {
+                expect_token(TokenTag::RightParen, input, "expected closing ')'")?;
                 return Ok(Some(int));
             }
         }
-    } else {
-        return Ok(None);
+        _ => return Ok(None),
     }
 
-    error_at(cur.off, "unexpected end of expression")
+    error_at(input.token.off, "unexpected end of expression")
 }
 
-fn match_operator(cur: &mut Cursor) -> Option<(BinOp, i32)> {
-    let op = match cur.char {
-        '+' => Some((BinOp::Add, 1)),
-        '-' => Some((BinOp::Sub, 1)),
-        '*' => Some((BinOp::Mul, 2)),
-        '/' => Some((BinOp::Div, 2)),
-        '<' => {
-            if peek(cur) == '<' {
-                Some((BinOp::Shl, 2))
-            } else {
-                None
-            }
-        }
-        '>' => {
-            if peek(cur) == '>' {
-                Some((BinOp::Shr, 2))
-            } else {
-                None
-            }
-        }
-        '|' => Some((BinOp::Or, 0)),
+fn match_operator(input: &mut Input) -> Option<(BinOp, i32)> {
+    let op = match input.token.tag {
+        TokenTag::Plus => Some((BinOp::Add, 1)),
+        TokenTag::Minus => Some((BinOp::Sub, 1)),
+        TokenTag::Star => Some((BinOp::Mul, 2)),
+        TokenTag::Slash => Some((BinOp::Div, 2)),
+        TokenTag::LessThan(2) => Some((BinOp::Shl, 2)),
+        TokenTag::GreaterThan(2) => Some((BinOp::Shr, 2)),
+        TokenTag::Or => Some((BinOp::Or, 0)),
         _ => None,
     };
 
     op
 }
 
-fn advance_operator(op: BinOp, cur: &mut Cursor) {
-    match op {
-        BinOp::Add => advance(cur),
-        BinOp::Sub => advance(cur),
-        BinOp::Mul => advance(cur),
-        BinOp::Div => advance(cur),
-        BinOp::Shl => {
-            advance(cur);
-            advance(cur)
-        }
-        BinOp::Shr => {
-            advance(cur);
-            advance(cur)
-        }
-        BinOp::Or => advance(cur),
-    }
-}
-
 fn parse_expression(
     mut lhs: i64,
     mut op: BinOp,
     prec: i32,
-    cur: &mut Cursor,
-    input: &str,
+    input: &mut Input,
     constants: &HashMap<&str, i64>,
 ) -> Result<i64, Error> {
     loop {
-        let mut rhs = if let Some(int) = match_primary(cur, input, constants)? {
+        let mut rhs = if let Some(int) = match_primary(input, constants)? {
             int
         } else {
-            return error_at(cur.off, "unexpected end of expression");
+            return error_at(input.token.off, "unexpected end of expression");
         };
 
-        skip_whitespace(cur);
-
-        if let Some((op, prec2)) = match_operator(cur) {
+        if let Some((op, prec2)) = match_operator(input) {
             if prec2 > prec {
-                advance_operator(op, cur);
-                skip_whitespace(cur);
-                rhs = parse_expression(rhs, op, prec2, cur, input, constants)?;
+                advance(input)?;
+                rhs = parse_expression(rhs, op, prec2, input, constants)?;
             }
         }
 
@@ -1303,11 +1510,10 @@ fn parse_expression(
             BinOp::Or => lhs |= rhs,
         };
 
-        if let Some((op2, prec2)) = match_operator(cur) {
+        if let Some((op2, prec2)) = match_operator(input) {
             if prec2 == prec {
                 op = op2;
-                advance_operator(op, cur);
-                skip_whitespace(cur);
+                advance(input)?;
                 continue;
             }
         }
@@ -1318,241 +1524,20 @@ fn parse_expression(
     Ok(lhs)
 }
 
-fn match_constant(
-    cur: &mut Cursor,
-    input: &str,
-    map: &HashMap<&str, i64>,
-) -> Result<Option<i64>, Error> {
-    if let Some((ident, at)) = match_identifier(cur, input) {
-        if let Some(&int) = map.get(ident) {
-            Ok(Some(int))
-        } else {
-            error_at(at, "undefined constant")
-        }
-    } else {
-        Ok(None)
-    }
-}
-
 fn match_expression(
-    cur: &mut Cursor,
-    input: &str,
+    input: &mut Input,
     constants: &HashMap<&str, i64>,
 ) -> Result<Option<i64>, Error> {
-    let mut lhs = if let Some(int) = match_primary(cur, input, constants)? {
-        int
-    } else {
+    let Some(mut lhs) = match_primary(input, constants)? else {
         return Ok(None);
     };
 
-    skip_whitespace(cur);
-
-    while let Some((op, prec)) = match_operator(cur) {
-        advance_operator(op, cur);
-        skip_whitespace(cur);
-        lhs = parse_expression(lhs, op, prec, cur, input, constants)?;
+    while let Some((op, prec)) = match_operator(input) {
+        advance(input)?;
+        lhs = parse_expression(lhs, op, prec, input, constants)?;
     }
 
     Ok(Some(lhs))
-}
-
-fn expect_expression(
-    mut lhs: i64,
-    cur: &mut Cursor,
-    input: &str,
-    constants: &HashMap<&str, i64>,
-) -> Result<i64, Error> {
-    skip_whitespace(cur);
-
-    while let Some((op, prec)) = match_operator(cur) {
-        advance_operator(op, cur);
-        skip_whitespace(cur);
-        lhs = parse_expression(lhs, op, prec, cur, input, constants)?;
-    }
-
-    Ok(lhs)
-}
-
-fn match_argument<'a>(
-    cur: &mut Cursor,
-    input: &'a str,
-    label: &'a str,
-    anon_labels: &[i64],
-    constants: &HashMap<&str, i64>,
-) -> Result<Option<Arg<'a>>, Error> {
-    if let Some((ident, at)) = match_identifier(cur, input) {
-        match ident {
-            "m8" | "m16" | "m32" | "m64" => {
-                skip_whitespace(cur);
-                if !match_char('[', cur) {
-                    return error_at(cur.off, "expected address after operand size");
-                } else {
-                    let addr = expect_address(cur, input, constants)?;
-                    let arg = match ident {
-                        "m8" => Arg::Mem8(addr),
-                        "m16" => Arg::Mem16(addr),
-                        "m32" => Arg::Mem32(addr),
-                        "m64" => Arg::Mem64(addr),
-                        _ => unreachable!(),
-                    };
-                    Ok(Some(arg))
-                }
-            }
-            _ => {
-                let arg = if let Some(reg) = parse_register(ident) {
-                    reg
-                } else if let Some(&int) = constants.get(ident) {
-                    let int = expect_expression(int, cur, input, constants)?;
-                    Arg::Imm(int)
-                } else {
-                    Arg::Label(parse_label((ident, at), cur, input)?)
-                };
-                Ok(Some(arg))
-            }
-        }
-    } else if match_char('.', cur) {
-        let at = cur.off - 1;
-        if let Some((ident, _)) = match_identifier(cur, input) {
-            let label = LabelName {
-                global: label,
-                local: ident,
-            };
-            Ok(Some(Arg::Label((label, at))))
-        } else {
-            error_at(cur.off, "expected label name")
-        }
-    } else if let Some(imm) = match_expression(cur, input, constants)? {
-        Ok(Some(Arg::Imm(imm)))
-    } else if match_char('[', cur) {
-        Ok(Some(Arg::Mem(expect_address(cur, input, constants)?)))
-    } else if match_char('<', cur) {
-        let at = cur.off - 1;
-        let mut delta = 1;
-
-        while match_char('<', cur) {
-            delta += 1;
-        }
-
-        if delta <= anon_labels.len() {
-            let off = unsafe { *anon_labels.get_unchecked(anon_labels.len() - delta) };
-            Ok(Some(Arg::Rel32(off, at)))
-        } else {
-            error_at(at, "trying to jump to a non-existent anonymous label")
-        }
-    } else if match_char('>', cur) {
-        let at = cur.off - 1;
-        let mut delta = 0;
-
-        while match_char('>', cur) {
-            delta += 1;
-        }
-
-        Ok(Some(Arg::AnonLabel(anon_labels.len() + delta, at)))
-    } else {
-        Ok(None)
-    }
-}
-
-fn expect_address<'a>(
-    cur: &mut Cursor,
-    input: &'a str,
-    constants: &HashMap<&str, i64>,
-) -> Result<Addr<'a>, Error> {
-    let mut label = None;
-    let mut base = None;
-    let mut index = None;
-    let mut scale: u32 = 1;
-    let mut disp: i64 = 0;
-
-    loop {
-        skip_whitespace(cur);
-
-        if let Some((ident, at)) = match_identifier(cur, &input) {
-            if let Some(reg) = parse_register(ident) {
-                let reg = if let Arg::Reg64(reg) = reg {
-                    reg
-                } else {
-                    return error_at(at, "expected 64-bit register");
-                };
-
-                skip_whitespace(cur);
-
-                if match_char('*', cur) {
-                    skip_whitespace(cur);
-                    if let Some((int, _)) = match_integer(cur)? {
-                        if int != 1 && int != 2 && int != 4 && int != 8 {
-                            return error_at(cur.off, "scale must be 1, 2, 4, or 8");
-                        }
-
-                        if index.is_some() {
-                            return error_at(at, "index already set");
-                        }
-
-                        if reg == 4 {
-                            return error_at(at, "register can't be used as index");
-                        }
-                        index = Some(reg);
-                        scale = int as u32;
-                    } else {
-                        return error_at(cur.off, "expected scale");
-                    }
-                } else {
-                    if base.is_some() {
-                        if index.is_some() {
-                            return error_at(at, "base and index already set");
-                        } else {
-                            if reg == 4 {
-                                // swap rsp with the already set base register because rsp can't be
-                                // used as index
-                                index = base;
-                                base = Some(reg);
-                            } else {
-                                index = Some(reg);
-                            }
-                        }
-                    } else {
-                        base = Some(reg);
-                    }
-                }
-            } else if let Some(&int) = constants.get(ident) {
-                let int = expect_expression(int, cur, input, constants)?;
-                disp += int;
-            } else {
-                label = Some(parse_label((ident, at), cur, input)?);
-            }
-        } else if let Some(int) = match_expression(cur, input, constants)? {
-            disp += int; // TODO: check for overflow
-        } else {
-            return error_at(cur.off, "expected address component");
-        }
-
-        skip_whitespace(cur);
-
-        if match_char('-', cur) {
-            skip_whitespace(cur);
-            if let Some(int) = match_expression(cur, input, constants)? {
-                disp -= int as i64; // TODO: check for overflow
-            } else {
-                return error_at(cur.off, "expected expression");
-            }
-        }
-
-        if !match_char('+', cur) {
-            break;
-        }
-    }
-
-    if !match_char(']', cur) {
-        return error_at(cur.off, "expected closing ']'");
-    }
-
-    Ok(Addr {
-        base,
-        index,
-        scale,
-        disp,
-        label,
-    })
 }
 
 fn parse_register(name: &str) -> Option<Arg> {
@@ -1571,6 +1556,140 @@ fn parse_register(name: &str) -> Option<Arg> {
     } else {
         None
     }
+}
+
+fn parse_address<'a>(
+    input: &mut Input<'a>,
+    constants: &HashMap<&str, i64>,
+    off: usize,
+) -> Result<Addr<'a>, Error> {
+    let mut label = None;
+    let mut base = None;
+    let mut index = None;
+    let mut scale: u32 = 1;
+    let mut disp: i64 = 0;
+
+    loop {
+        let off = input.token.off;
+
+        if let TokenTag::Ident(ident) = input.token.tag {
+            let ident_off = input.token.off;
+            advance(input)?;
+
+            if let Some(reg) = parse_register(ident) {
+                let Arg::Reg64(reg) = reg else {
+                    return error_at(ident_off, "expected 64-bit register");
+                };
+
+                if match_token(TokenTag::Star, input)? {
+                    if let TokenTag::Int(int) = input.token.tag {
+                        let off = input.token.off;
+                        advance(input)?;
+
+                        if int != 1 && int != 2 && int != 4 && int != 8 {
+                            return error_at(off, "scale must be 1, 2, 4, or 8");
+                        }
+
+                        if index.is_some() {
+                            return error_at(off, "index already set");
+                        }
+
+                        if reg == 4 {
+                            return error_at(ident_off, "register can't be used as index");
+                        }
+                        index = Some(reg);
+                        scale = int as u32;
+                    } else {
+                        return error_at(input.token.off, "expected scale");
+                    }
+                } else {
+                    if base.is_some() {
+                        if index.is_some() {
+                            return error_at(ident_off, "base and index already set");
+                        } else {
+                            if reg == 4 {
+                                // swap rsp with the already set base register because rsp can't be
+                                // used as index
+                                index = base;
+                                base = Some(reg);
+                            } else {
+                                index = Some(reg);
+                            }
+                        }
+                    } else {
+                        base = Some(reg);
+                    }
+                }
+            } else if let Some(&int) = constants.get(ident) {
+                // TODO: duplicated in match_argument and match_expression
+                let mut val = int;
+                while let Some((op, prec)) = match_operator(input) {
+                    advance(input)?;
+                    val = parse_expression(val, op, prec, input, constants)?;
+                }
+
+                disp = if let Some(disp) = disp.checked_add(val) {
+                    disp
+                } else {
+                    return error_at(input.token.off, "overflow");
+                };
+            } else {
+                label = Some((
+                    LabelName {
+                        global: ident,
+                        local: "",
+                    },
+                    ident_off,
+                ));
+            }
+        } else if let TokenTag::Int(int) = input.token.tag {
+            disp = if let Some(disp) = disp.checked_add(int) {
+                disp
+            } else {
+                return error_at(input.token.off, "overflow");
+            };
+            advance(input)?;
+        } else if let TokenTag::LabelTarget(name) = input.token.tag {
+            advance(input)?;
+            label = Some((name, off));
+        } else {
+            return error_at(input.token.off, "expected address component");
+        }
+
+        if match_token(TokenTag::Minus, input)? {
+            if let Some(int) = match_expression(input, constants)? {
+                disp = if let Some(disp) = disp.checked_sub(int) {
+                    disp
+                } else {
+                    return error_at(input.token.off, "overflow");
+                };
+            } else {
+                return error_at(input.token.off, "expected expression");
+            }
+        }
+
+        if !match_token(TokenTag::Plus, input)? {
+            break;
+        }
+    }
+
+    expect_token(TokenTag::RightBracket, input, "expected closing ']'")?;
+
+    if disp != 0 && base.is_none() && index.is_none() && label.is_none() {
+        return error_at(off, "address can't have only displacement");
+    }
+
+    if label.is_some() && (base.is_some() || index.is_some()) {
+        return error_at(off, "address can't combine label and registers");
+    }
+
+    Ok(Addr {
+        base,
+        index,
+        scale,
+        disp,
+        label,
+    })
 }
 
 fn emit_insn<'a>(
@@ -1794,14 +1913,12 @@ fn emit_modrm<'a>(
         | Arg::Mem32(addr)
         | Arg::Mem64(addr) => {
             if let Some((label, at)) = addr.label {
-                // TODO: this should be caught by the parser
                 assert!(addr.base.is_none());
                 assert!(addr.index.is_none());
-
                 write_modrm(0b00, reg, 0b101, out);
                 emit_rel32_from_label((label, at), addr.disp, ctx, insn)?;
             } else {
-                assert!(addr.label.is_none()); // TODO: this should be caught by the parser
+                assert!(addr.label.is_none());
 
                 let index = match addr.index {
                     Some(mut index) => {
@@ -1865,7 +1982,6 @@ fn emit_modrm<'a>(
                     }
                 } else {
                     // no base or index, just displacement
-                    // TODO: this should be caught by the parser
                     unreachable!();
                 }
             }
@@ -1968,6 +2084,50 @@ mod tests {
                 self.failed = true;
             }
         }
+    }
+
+    #[test]
+    fn test_empty() {
+        let mut r = Runner::new();
+        r.pass("", &[]);
+        assert!(!r.failed);
+    }
+
+    #[test]
+    fn test_minimal() {
+        let mut r = Runner::new();
+        r.pass(
+            "mov eax, 60\n\
+             xor edi, edi\n\
+             syscall",
+            &[0xb8, 0x3c, 0x00, 0x00, 0x00, 0x31, 0xff, 0x0f, 0x05],
+        );
+        assert!(!r.failed);
+    }
+
+    #[test]
+    fn test_hello() {
+        let mut r = Runner::new();
+        r.pass(
+            "mov eax, 1\n\
+             mov edi, 1\n\
+             lea rsi, [msg]\n\
+             mov edx, 9\n\
+             syscall\n\
+             mov eax, 60\n\
+             xor edi, edi\n\
+             syscall\n\
+             msg:\n\
+             .i8 \"hello...\"\n\
+             .i8 10",
+            &[
+                0xb8, 0x01, 0x00, 0x00, 0x00, 0xbf, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8d, 0x35, 0x10,
+                0x00, 0x00, 0x00, 0xba, 0x09, 0x00, 0x00, 0x00, 0x0f, 0x05, 0xb8, 0x3c, 0x00, 0x00,
+                0x00, 0x31, 0xff, 0x0f, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x2e, 0x2e, 0x2e, 0x0a,
+            ],
+        );
+
+        assert!(!r.failed);
     }
 
     #[test]
@@ -2104,6 +2264,12 @@ mod tests {
               0x44, 0x33, 0x22, 0x11, 0x00, 0xef, 0xcd, 0xab,
               0xab, 0x00, 0xcd, 0x00],
         );
+
+        // address has only displacement, no label
+        r.fail("lea rsi, [123]", 9);
+
+        // address combines label and registers
+        r.fail("lea rsi, [rax+label]\nlabel:.i16 123", 9);
 
         assert!(!r.failed);
     }
@@ -2355,10 +2521,51 @@ mod tests {
             &[0x50, 0x53, 0x5b, 0x58, 0x51, 0x52],
         );
 
-        r.fail(".push", 1);
-        r.fail(".pop", 1);
+        r.fail(".push", 0);
+        r.fail(".pop", 0);
         r.fail(".push rax rbx rcx rbx", 18);
-        r.fail(".push rax\n.push rbx", 11);
+        r.fail(".push rax\n.push rbx", 10);
+
+        assert!(!r.failed);
+    }
+
+    #[test]
+    fn test_data_directives() {
+        let mut r = Runner::new();
+
+        r.pass(
+            ".i8 1 2 3 4\n\
+             .i16 1 2 3\n\
+             .i32 1 2",
+            &[
+                0x01, 0x02, 0x03, 0x04, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00,
+                0x02, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        r.pass(
+            ".i8 \"string\" 123",
+            &[b's', b't', b'r', b'i', b'n', b'g', 123],
+        );
+
+        r.fail(".i8 256", 4);
+        r.fail(".i8 -129", 4);
+        r.fail(".i16 65536", 5);
+        r.fail(".i16 -32769", 5);
+        r.fail(".i32 4294967296", 5);
+        r.fail(".i32 -2147483649", 5);
+
+        assert!(!r.failed);
+    }
+
+    #[test]
+    fn test_literals() {
+        let mut r = Runner::new();
+
+        r.fail(".i8 \"unterminated", 17);
+        // TODO: enable
+        //r.fail(".i64 -9223372036854775808", 5);
+        //r.fail(".i64 9223372036854775808", 5);
 
         assert!(!r.failed);
     }

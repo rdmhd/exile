@@ -288,8 +288,8 @@ main_loop:
   and m8 [rsi+rdx*4+e_flags], ~ef_hurt
 
   and ebx, em_hp
-  test ebx, ebx
-  jnz >
+  cmp ebx, 0
+  jg >
   ; entity is out of hp
   mov m8 [rsi+rdx*4+e_data], 0
 
@@ -877,6 +877,11 @@ draw_ui:
 move_char:
   sub rsp, 16
 
+  mov m8 [do_timer], 0
+
+  cmp m64 [timer], 0
+  jne >>
+
   ; TODO: this prevents from attacking when char has 0 hp, remove
   test m8 [entities+4+e_data], em_hp
   jz >>
@@ -888,11 +893,15 @@ move_char:
   cmp eax, 0xff
   je >
   call damage_entity
+  mov m8 [do_timer], 1
 
 : call simulate_entities
   call redraw_tilemap
   call draw_ui
 
+  ; start the timer if necessary
+  cmp m8 [do_timer], 1
+  jne >
   mov eax, 228 ; clock_gettime
   mov edi, 1 ; CLOCK_MONOTONIC
   lea rsi, [rsp]
@@ -904,8 +913,9 @@ move_char:
   add rax, 150 * 1000000
   mov [timer], rax
 
+
   ;call draw_distbuf
-  mov eax, 1
+: mov eax, 1
 : add rsp, 16
   ret
 
@@ -972,8 +982,9 @@ simulate_entities:
   lea r9, [entities]
 
 .next:
-  cmp m8 [r9+r8*4+2], 0
-  je >>
+  movzx eax, m8 [r9+r8*4+e_data]
+  test eax, em_type
+  jz >>
 
   call compute_distances
 
@@ -1076,6 +1087,7 @@ move_towards_char:
   ; attack
   mov eax, 1
   call damage_entity
+  mov m8 [do_timer], 1
 
   jmp .done
 : mov ebx, esi
@@ -1969,6 +1981,7 @@ distbuf: .res map_width * map_height
 
 time: .i64 0
 timer: .i64 0
+do_timer: .i8 0
 
 debugmode: .i8 0
 

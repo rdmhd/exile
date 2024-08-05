@@ -7,6 +7,7 @@ use std::{
     process::exit, str::CharIndices,
 };
 
+#[derive(Clone)]
 struct Addr<'a> {
     base: Option<u32>,
     index: Option<u32>,
@@ -16,6 +17,7 @@ struct Addr<'a> {
     label: Option<(LabelName<'a>, usize)>,
 }
 
+#[derive(Clone)]
 enum Arg<'a> {
     None,
     Eax,
@@ -136,6 +138,8 @@ enum Token<'a> {
     RightBracket,
     LeftParen,
     RightParen,
+    LeftBrace,
+    RightBrace,
     Plus,
     Minus,
     Star,
@@ -149,6 +153,7 @@ enum Token<'a> {
     Mem16,
     Mem32,
     Mem64,
+    MacroArg(&'a str),
     Error,
 }
 
@@ -162,6 +167,7 @@ enum Directive {
     Push,
     Pop,
     Res,
+    Macro,
 }
 
 struct Output<'a> {
@@ -213,6 +219,14 @@ struct Input<'a> {
     token: Token<'a>,
     source: &'a str,
     at: usize,
+    beg: usize, // offset into the file where the input starts (used for macros)
+}
+
+#[allow(dead_code)] // TODO: remove
+struct Macro<'a> {
+    source: &'a str,
+    args: Vec<&'a str>,
+    beg: usize,
 }
 
 #[derive(Debug)]
@@ -458,15 +472,6 @@ fn fmt_error(err: Error, input: &str, path: &str) -> String {
 }
 
 fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> {
-    let mut input = Input {
-        next_char: '\0',
-        next_off: 0,
-        iter: input.char_indices(),
-        token: Token::EOF,
-        source: input,
-        at: 0,
-    };
-
     let mut ctx = Context {
         labels: HashMap::new(),
         patches: Vec::new(),
@@ -485,67 +490,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
         verbose,
     };
 
-    read_char(&mut input);
-    advance(&mut input)?;
-
-    loop {
-        match input.token {
-            Token::Ident(mnemonic) => {
-                asm_instruction(mnemonic, &mut input, &mut ctx)?;
-            }
-            Token::Label(name) => {
-                apply_anon_patches(&mut ctx.anon_patches, &ctx.anon_labels, &mut ctx.out)?;
-
-                let label = Label {
-                    off: ctx.out.data.len() as i64,
-                    locals: HashMap::new(),
-                };
-
-                if ctx.labels.insert(name, label).is_some() {
-                    return error_at(input.at, "label with this name already exists");
-                }
-
-                ctx.curr_label = name;
-                ctx.anon_labels.clear();
-                advance(&mut input)?;
-                continue;
-            }
-            Token::LocalLabel(name) => {
-                let at = input.at;
-                advance(&mut input)?;
-                match ctx.labels.get_mut(ctx.curr_label) {
-                    Some(label) => {
-                        let off = ctx.out.data.len() as i64;
-                        if label.locals.insert(name, off).is_some() {
-                            return error_at(at, "label with this name already exists");
-                        };
-                    }
-                    None => return error_at(at, "local label declared in global scope"),
-                }
-                continue;
-            }
-            Token::Direct(direct) => {
-                asm_directive(direct, &mut input, &mut ctx)?;
-            }
-            Token::AnonLabel => {
-                if ctx.curr_label.is_empty() {
-                    return error_at(input.at, "anonymous label must be declared in local scope");
-                }
-                ctx.anon_labels.push(ctx.out.data.len() as i64);
-                advance(&mut input)?;
-                continue;
-            }
-            _ => (),
-        }
-
-        if match_token(Token::NewLine, &mut input)? {
-            continue;
-        } else if input.token == Token::EOF {
-            break;
-        } else {
-            return error_at(input.at, "invalid input");
-        }
-    }
+    asm_source(input, 0, &[], &[], &mut ctx)?;
 
     apply_anon_patches(&mut ctx.anon_patches, &ctx.anon_labels, &mut ctx.out)?;
     apply_patches(&ctx.labels, &ctx.patches, &mut ctx.out)?;
@@ -697,9 +642,20 @@ fn advance<'a>(input: &mut Input) -> Result<(), Error> {
                         "push" => break Token::Direct(Directive::Push),
                         "pop" => break Token::Direct(Directive::Pop),
                         "res" => break Token::Direct(Directive::Res),
+                        "macro" => break Token::Direct(Directive::Macro),
                         _ => break Token::LocalLabelTarget(ident),
                     }
                 }
+            }
+            '@' => {
+                let beg = input.next_off;
+                if !matches!(input.next_char, 'a'..='z') {
+                    return error_at(input.next_off, "expected identifier");
+                }
+                read_char(input);
+                read_ident(input);
+                let ident = &input.source[beg..input.next_off];
+                break Token::MacroArg(ident);
             }
             '"' => {
                 let beg = input.next_off;
@@ -726,6 +682,8 @@ fn advance<'a>(input: &mut Input) -> Result<(), Error> {
             ']' => break Token::RightBracket,
             '(' => break Token::LeftParen,
             ')' => break Token::RightParen,
+            '{' => break Token::LeftBrace,
+            '}' => break Token::RightBrace,
             '<' => {
                 let mut count = 1;
                 while input.next_char == '<' {
@@ -760,7 +718,7 @@ fn advance<'a>(input: &mut Input) -> Result<(), Error> {
         }
     };
 
-    input.at = off;
+    input.at = input.beg + off;
     input.token = tag;
     Ok(())
 }
@@ -788,6 +746,8 @@ fn match_argument<'a>(
     label: &'a str,
     anon_labels: &[i64],
     constants: &HashMap<&str, i64>,
+    macro_params: &[&str],
+    macro_args: &[Arg<'a>],
 ) -> Result<Option<Arg<'a>>, Error> {
     if let Token::Ident(ident) = input.token {
         let off = input.at;
@@ -865,6 +825,16 @@ fn match_argument<'a>(
             local: name,
         };
         return Ok(Some(Arg::Label((label, at))));
+    }
+
+    if let Token::MacroArg(name) = input.token {
+        advance(input)?;
+        for (idx, &param) in macro_params.iter().enumerate() {
+            if name == param {
+                return Ok(Some(macro_args[idx].clone()));
+            }
+        }
+        return error_at(at, "parameter does not exist");
     }
 
     Ok(None)
@@ -1195,10 +1165,140 @@ fn is_valid32(val: i64) -> bool {
     }
 }
 
+fn asm_source<'a>(
+    input: &'a str,
+    beg: usize,
+    params: &[&str],
+    args: &[Arg<'a>],
+    ctx: &mut Context<'a>,
+) -> Result<(), Error> {
+    let mut input = Input {
+        next_char: '\0',
+        next_off: 0,
+        iter: input.char_indices(),
+        token: Token::EOF,
+        source: input,
+        at: 0,
+        beg,
+    };
+
+    read_char(&mut input);
+    advance(&mut input)?;
+
+    let mut macros = HashMap::<&str, Macro>::new();
+
+    loop {
+        match input.token {
+            Token::Ident(ident) => {
+                if let Some(r#macro) = macros.get(ident) {
+                    let at = input.at;
+                    advance(&mut input)?;
+
+                    let mut args = Vec::new();
+                    let params = r#macro.args.as_slice();
+
+                    if let Some(arg) = match_argument(
+                        &mut input,
+                        ctx.curr_label,
+                        &ctx.anon_labels,
+                        &ctx.constants,
+                        params,
+                        &args,
+                    )? {
+                        args.push(arg);
+                        while match_token(Token::Comma, &mut input)? {
+                            if let Some(arg) = match_argument(
+                                &mut input,
+                                ctx.curr_label,
+                                &ctx.anon_labels,
+                                &ctx.constants,
+                                params,
+                                &args,
+                            )? {
+                                args.push(arg);
+                            } else {
+                                return error_at(input.at, "expected argument after ','");
+                            }
+                        }
+                    }
+
+                    if args.len() != params.len() {
+                        return error_at(at, "number of arguments doesn't match number of macro params");
+                    }
+
+                    asm_source(r#macro.source, r#macro.beg, params, &args, ctx)?;
+                } else {
+                    asm_instruction(ident, &mut input, ctx, params, args)?;
+                }
+            }
+            Token::Label(name) => {
+                apply_anon_patches(&mut ctx.anon_patches, &ctx.anon_labels, &mut ctx.out)?;
+
+                let label = Label {
+                    off: ctx.out.data.len() as i64,
+                    locals: HashMap::new(),
+                };
+
+                if ctx.labels.insert(name, label).is_some() {
+                    return error_at(input.at, "label with this name already exists");
+                }
+
+                ctx.curr_label = name;
+                ctx.anon_labels.clear();
+                advance(&mut input)?;
+                continue;
+            }
+            Token::LocalLabel(name) => {
+                let at = input.at;
+                advance(&mut input)?;
+                match ctx.labels.get_mut(ctx.curr_label) {
+                    Some(label) => {
+                        let off = ctx.out.data.len() as i64;
+                        if label.locals.insert(name, off).is_some() {
+                            return error_at(at, "label with this name already exists");
+                        };
+                    }
+                    None => return error_at(at, "local label declared in global scope"),
+                }
+                continue;
+            }
+            Token::Direct(direct) => match direct {
+                Directive::Macro => {
+                    advance(&mut input)?;
+                    let (name, tokens) = asm_macro_def(&mut input)?;
+                    macros.insert(name, tokens);
+                }
+                _ => asm_directive(direct, &mut input, ctx)?,
+            },
+            Token::AnonLabel => {
+                if ctx.curr_label.is_empty() {
+                    return error_at(input.at, "anonymous label must be declared in local scope");
+                }
+                ctx.anon_labels.push(ctx.out.data.len() as i64);
+                advance(&mut input)?;
+                continue;
+            }
+            _ => (),
+        }
+
+        if match_token(Token::NewLine, &mut input)? {
+            continue;
+        } else if input.token == Token::EOF {
+            break;
+        } else {
+            return error_at(input.at, "invalid input");
+        }
+    }
+
+    Ok(())
+}
+
 fn asm_instruction<'a>(
     mnemonic: &str,
     input: &mut Input<'a>,
     ctx: &mut Context<'a>,
+    params: &[&str],
+    args: &[Arg<'a>],
 ) -> Result<(), Error> {
     let at = input.at;
     advance(input)?;
@@ -1207,13 +1307,13 @@ fn asm_instruction<'a>(
     let mut arg2 = Arg::None;
     let mut arg3 = Arg::None;
 
-    if let Some(arg) = match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants)?
+    if let Some(arg) = match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants, params, args)?
     {
         arg1 = arg;
 
         if match_token(Token::Comma, input)? {
             if let Some(arg) =
-                match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants)?
+                match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants, params, args)?
             {
                 arg2 = arg;
             } else {
@@ -1222,7 +1322,7 @@ fn asm_instruction<'a>(
 
             if match_token(Token::Comma, input)? {
                 if let Some(arg) =
-                    match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants)?
+                    match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants, params, args)?
                 {
                     arg3 = arg;
                 } else {
@@ -1404,9 +1504,41 @@ fn asm_directive<'a>(
                 return error_at(input.at, "expected number of bytes to reserve");
             }
         }
+        Directive::Macro => unreachable!(),
     }
 
     Ok(())
+}
+
+fn asm_macro_def<'a>(input: &mut Input<'a>) -> Result<(&'a str, Macro<'a>), Error> {
+    let Token::Ident(name) = input.token else {
+        return error_at(input.at, "expected macro name");
+    };
+    advance(input)?;
+
+    let mut args = Vec::new();
+    while let Token::Ident(ident) = input.token {
+        args.push(ident);
+        advance(input)?;
+    }
+
+    expect_token(Token::LeftBrace, input, "expected '{'")?;
+
+    let beg = input.next_off;
+    let source;
+
+    loop {
+        if match_token(Token::RightBrace, input)? {
+            source = &input.source[beg..input.at - 1];
+            break;
+        }
+        if input.token == Token::EOF {
+            return error_at(input.at, "unexpected end of input")?;
+        }
+        advance(input)?;
+    }
+
+    Ok((name, Macro { source, args, beg }))
 }
 
 fn error_at<T>(at: usize, msg: &'static str) -> Result<T, Error> {

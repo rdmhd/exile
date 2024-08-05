@@ -41,6 +41,22 @@
 
 .def fov_distance 6
 
+.macro sys_write fd addr size {
+  mov eax, 1
+  mov edi, @fd
+  lea rsi, @addr
+  mov edx, @size
+  syscall
+}
+
+.macro sys_read fd dst size {
+  xor eax, eax
+  mov edi, @fd
+  mov rsi, @dst
+  mov edx, @size
+  syscall
+}
+
 read_xauthority_cookie:
   mov rsi, [rsp]          ; get number of command line args
   lea rsi, [rsp+rsi*8+16] ; get address of first environment var
@@ -93,20 +109,10 @@ lea rsi, [sockaddr]
 mov edx, 110
 syscall
 
-; write connection request
-mov eax, 1
-mov edi, r12d
-lea rsi, [conn_request]
-mov edx, 48
-syscall
-
-; read connection request reply
+; connect to X11
+sys_write r12d, [conn_request], 48
 sub rsp, 8276 ; TODO: should get this from the response
-xor eax, eax
-mov edi, r12d
-mov rsi, rsp
-mov edx, 8276
-syscall
+sys_read r12d, rsp, 8276
 
 ; zero first byte of the reply indicates connection failure
 cmp m8 [rsp], 0
@@ -134,134 +140,45 @@ mov eax, [rsp+rbx+40]
 mov [create_window.parent], eax
 mov [create_gc+8], eax
 
-; query big-requests extension
-mov eax, 1
-mov edi, r12d
-lea rsi, [query_big_requests]
-mov edx, 20
-syscall
-
-; read big-requests extension reply
-xor eax, eax
-mov edi, r12d
-mov rsi, rsp
-mov edx, 32
-syscall
-
+; enable big requests extension
+sys_write r12d, [query_big_requests], 20
+sys_read r12d, rsp, 32
 mov al, [rsp+9]
 mov [big_req_enable], al
+sys_write r12d, [big_req_enable], 4
+sys_read r12d, rsp, 32 ; request always generates a reply
 
-; enable big requests
-mov eax, 1
-mov edi, r12d
-lea rsi, [big_req_enable]
-mov edx, 4
-syscall
+sys_write r12d, [create_window], 36
+sys_write r12d, [change_wm_class], 36
+sys_write r12d, [change_wm_name], 32
 
-; have to read reply here
-xor eax, eax
-mov edi, r12d
-mov rsi, rsp
-mov edx, 32
-syscall
-
-; write create window request
-mov eax, 1
-mov edi, r12d
-lea rsi, [create_window]
-mov edx, 36
-syscall
-
-; write change wm class request
-mov eax, 1
-mov edi, r12d
-lea rsi, [change_wm_class]
-mov edx, 36
-syscall
-
-; write change wm name request
-mov eax, 1
-mov edi, r12d
-lea rsi, [change_wm_name]
-mov edx, 32
-syscall
-
-; intern WM_PROTOCOLS atom
-mov eax, 1
-mov edi, r12d
-lea rsi, [intern_atom_wm_protocols]
-mov edx, 20
-syscall
-xor eax, eax
-mov edi, r12d
-mov rsi, rsp
-mov edx, 32
-syscall
+; intern WM_PROTOCOLS and WM_DELETE_WINDOW atoms
+sys_write r12d, [intern_atom_wm_protocols], 20
+sys_write r12d, [intern_atom_wm_delete_window], 24
+sys_read r12d, rsp, 64
 movzx eax, m16 [rsp+8]
 mov [change_wm_protocols.property], eax
+movzx ebx, m16 [rsp+32+8]
+mov [change_wm_protocols.value], ebx
 
-; intern WM_DELETE_WINDOW atom
-mov eax, 1
-mov edi, r12d
-lea rsi, [intern_atom_wm_delete_window]
-mov edx, 24
-syscall
-xor eax, eax
-mov edi, r12d
-mov rsi, rsp
-mov edx, 32
-syscall
-movzx eax, m16 [rsp+8]
-mov [change_wm_protocols.value], eax
-
-; change window WM_PROTOCOLS property
-mov eax, 1
-mov edi, r12d
-lea rsi, [change_wm_protocols]
-mov edx, 28
-syscall
-
-; write create gc request
-mov eax, 1
-mov edi, r12d
-lea rsi, [create_gc]
-mov edx, 16
-syscall
-
-; write map window request
-mov eax, 1
-mov edi, r12d
-lea rsi, [map_window]
-mov edx, 8
-syscall
+sys_write r12d, [change_wm_protocols], 28
+sys_write r12d, [create_gc], 16
+sys_write r12d, [map_window], 8
 
 add rsp, 8276
-
-lea rax, [sockfd]
-mov [rax], r12d
+mov [sockfd], r12d
 
 ; seed rng
 rdrand eax
-lea rbx, [rng_state]
-mov [rbx], eax
+mov [rng_state], eax
 
 call generate_map
 call draw_world
 
 sub rsp, 32
 
-; store initial time value
-mov eax, 228 ; clock_gettime
-mov edi, 1 ; CLOCK_MONOTONIC
-lea rsi, [rsp]
-syscall
-mov rax, [rsp+0]
-mov rbx, [rsp+8]
-imul rax, rax, 1000000000
-add rax, rbx
-mov [time], rax
-
 main_loop:
+  ; store current time
   mov eax, 228 ; clock_gettime
   mov edi, 1 ; CLOCK_MONOTONIC
   lea rsi, [rsp]
@@ -330,12 +247,7 @@ main_loop:
   je main_loop
 
 ; read event
-  xor eax, eax
-  mov edi, ebx
-  mov rsi, rsp
-  mov edx, 32
-  syscall
-
+  sys_read ebx, rsp, 32
   movzx eax, m8 [rsp] ; load event id
   cmp eax, 2 ; keypress event?
   je process_keydown
@@ -354,12 +266,7 @@ main_loop:
   jmp exit
 
 refresh_screen:
-  ; write put image request
-  mov edi, [sockfd]
-  mov eax, 1
-  lea rsi, [put_image]
-  mov edx, (7 + screen_width * screen_height) * 4
-  syscall
+  sys_write [sockfd], [put_image], (7 + screen_width * screen_height) * 4
   jmp main_loop
 
 process_keydown:
@@ -902,17 +809,9 @@ move_char:
   ; start the timer if necessary
   cmp m8 [do_timer], 1
   jne >
-  mov eax, 228 ; clock_gettime
-  mov edi, 1 ; CLOCK_MONOTONIC
-  lea rsi, [rsp]
-  syscall
-  mov rax, [rsp+0]
-  mov rbx, [rsp+8]
-  imul rax, rax, 1000000000
-  add rax, rbx
+  mov rax, [time]
   add rax, 150 * 1000000
   mov [timer], rax
-
 
   ;call draw_distbuf
 : mov eax, 1

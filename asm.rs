@@ -213,19 +213,25 @@ struct Label<'a> {
 }
 
 struct Input<'a> {
-    next_char: char,
-    next_off: usize,
-    iter: CharIndices<'a>,
+    iter: InputIter<'a>,
     token: Token<'a>,
-    source: &'a str,
     at: usize,
+    tokens: Vec<(Token<'a>, usize)>,
+    source: &'a str,
     beg: usize, // offset into the file where the input starts (used for macros)
+    params: Vec<&'a str>,
+    args: Vec<&'a str>,
 }
 
-#[allow(dead_code)] // TODO: remove
+struct InputIter<'a> {
+    char: char,
+    off: usize,
+    iter: CharIndices<'a>,
+}
+
 struct Macro<'a> {
     source: &'a str,
-    args: Vec<&'a str>,
+    params: Vec<&'a str>,
     beg: usize,
 }
 
@@ -490,7 +496,7 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
         verbose,
     };
 
-    asm_source(input, 0, &[], &[], &mut ctx)?;
+    asm_source(input, 0, Vec::new(), Vec::new(), &mut ctx)?;
 
     apply_anon_patches(&mut ctx.anon_patches, &ctx.anon_labels, &mut ctx.out)?;
     apply_patches(&ctx.labels, &ctx.patches, &mut ctx.out)?;
@@ -498,8 +504,8 @@ fn assemble(input: &str, out: &mut Vec<u8>, verbose: bool) -> Result<(), Error> 
     Ok(())
 }
 
-fn read_char(input: &mut Input) {
-    (input.next_off, input.next_char) = input.iter.next().unwrap_or((input.iter.offset(), '\0'));
+fn read_char(iter: &mut InputIter) {
+    (iter.off, iter.char) = iter.iter.next().unwrap_or((iter.iter.offset(), '\0'));
 }
 
 fn checked_digit(val: u64, increase: u64, scale: u64, off: usize) -> Result<u64, Error> {
@@ -514,32 +520,78 @@ fn checked_digit(val: u64, increase: u64, scale: u64, off: usize) -> Result<u64,
 }
 
 fn advance<'a>(input: &mut Input) -> Result<(), Error> {
+    if input.tokens.is_empty() {
+        (input.token, input.at) = next_token(&mut input.iter, input.source, input.beg)?;
+
+        if !input.args.is_empty() {
+            if let Token::MacroArg(name) = input.token {
+                for idx in 0..input.params.len() {
+                    if input.params[idx] == name {
+                        let arg = input.args[idx];
+
+                        let mut iter = InputIter {
+                            char: '\0',
+                            off: 0,
+                            iter: arg.char_indices(),
+                        };
+
+                        read_char(&mut iter);
+
+                        loop {
+                            let (token, at) = next_token(&mut iter, arg, input.at)?;
+                            if matches!(token, Token::EOF) {
+                                break;
+                            }
+                            input.tokens.push((token, at));
+                        }
+
+                        let (token, at) = input.tokens.remove(0);
+                        input.token = token;
+                        input.at = at;
+                        return Ok(())
+                    }
+                }
+                return error_at(input.at, "unknown macro argument");
+            }
+        }
+    } else {
+        (input.token, input.at) = input.tokens.remove(0);
+    }
+
+    Ok(())
+}
+
+fn next_token<'a>(
+    iter: &mut InputIter<'a>,
+    source: &'a str,
+    beg: usize,
+) -> Result<(Token<'a>, usize), Error> {
     let mut off;
 
-    fn read_ident(input: &mut Input) {
-        while matches!(input.next_char, 'a'..='z' | '0' ..='9' | '_') {
-            read_char(input);
+    fn read_ident(iter: &mut InputIter) {
+        while matches!(iter.char, 'a'..='z' | '0' ..='9' | '_') {
+            read_char(iter);
         }
     }
 
-    let tag = loop {
-        off = input.next_off;
-        let char = input.next_char;
+    let token = loop {
+        off = iter.off;
+        let char = iter.char;
 
-        read_char(input);
+        read_char(iter);
 
         match char {
             'a'..='z' => {
-                read_ident(input);
-                let ident = &input.source[off..input.next_off];
-                if input.next_char == ':' {
-                    read_char(input);
+                read_ident(iter);
+                let ident = &source[off..iter.off];
+                if iter.char == ':' {
+                    read_char(iter);
                     break Token::Label(ident);
-                } else if input.next_char == '.' {
-                    read_char(input);
-                    let beg = input.next_off;
-                    read_ident(input);
-                    let local = &input.source[beg..input.next_off];
+                } else if iter.char == '.' {
+                    read_char(iter);
+                    let beg = iter.off;
+                    read_ident(iter);
+                    let local = &source[beg..iter.off];
                     break Token::LabelTarget(LabelName {
                         global: ident,
                         local,
@@ -555,82 +607,62 @@ fn advance<'a>(input: &mut Input) -> Result<(), Error> {
                 }
             }
             '0' => {
-                if input.next_char == 'b' {
-                    read_char(input);
+                if iter.char == 'b' {
+                    read_char(iter);
                     let mut val = 0;
-                    while input.next_char == '0' || input.next_char == '1' {
-                        val = checked_digit(
-                            val,
-                            input.next_char as u64 - '0' as u64,
-                            2,
-                            input.next_off,
-                        )?;
-                        read_char(input);
+                    while iter.char == '0' || iter.char == '1' {
+                        val = checked_digit(val, iter.char as u64 - '0' as u64, 2, iter.off)?;
+                        read_char(iter);
                     }
                     break Token::Int(val as i64);
-                } else if input.next_char == 'x' {
-                    read_char(input);
+                } else if iter.char == 'x' {
+                    read_char(iter);
                     let mut val = 0;
 
                     loop {
-                        if matches!(input.next_char, '0'..='9') {
+                        if matches!(iter.char, '0'..='9') {
+                            val = checked_digit(val, iter.char as u64 - '0' as u64, 16, iter.off)?;
+                        } else if matches!(iter.char, 'a'..='f') {
                             val = checked_digit(
                                 val,
-                                input.next_char as u64 - '0' as u64,
+                                iter.char as u64 - 'a' as u64 + 10,
                                 16,
-                                input.next_off,
-                            )?;
-                        } else if matches!(input.next_char, 'a'..='f') {
-                            val = checked_digit(
-                                val,
-                                input.next_char as u64 - 'a' as u64 + 10,
-                                16,
-                                input.next_off,
+                                iter.off,
                             )?;
                         } else {
                             break;
                         }
-                        read_char(input);
+                        read_char(iter);
                     }
                     break Token::Int(val as i64);
                 } else {
                     let mut val = 0;
-                    while matches!(input.next_char, '0'..='9') {
-                        val = checked_digit(
-                            val,
-                            input.next_char as u64 - '0' as u64,
-                            10,
-                            input.next_off,
-                        )?;
-                        read_char(input);
+                    while matches!(iter.char, '0'..='9') {
+                        val = checked_digit(val, iter.char as u64 - '0' as u64, 10, iter.off)?;
+                        read_char(iter);
                     }
                     break Token::Int(val as i64);
                 }
             }
             '1'..='9' => {
                 let mut val = char as u64 - '0' as u64;
-                while matches!(input.next_char, '0'..='9') {
-                    val = checked_digit(
-                        val,
-                        input.next_char as u64 - '0' as u64,
-                        10,
-                        input.next_off,
-                    )?;
-                    read_char(input);
+                while matches!(iter.char, '0'..='9') {
+                    val = checked_digit(val, iter.char as u64 - '0' as u64, 10, iter.off)?;
+                    read_char(iter);
                 }
                 break Token::Int(val as i64);
             }
             '.' => {
-                let beg = input.next_off;
-                if !matches!(input.next_char, 'a'..='z') {
-                    return error_at(input.next_off, "expected identifier");
+                let beg = iter.off;
+                if !matches!(iter.char, 'a'..='z') {
+                    return error_at(iter.off, "expected identifier");
                 }
-                read_char(input);
-                read_ident(input);
-                let ident = &input.source[beg..input.next_off];
+                read_char(iter);
+                read_ident(iter);
+                let ident = &source[beg..iter.off];
 
-                if input.next_char == ':' {
-                    read_char(input);
+                if iter.char == ':' {
+                    read_char(iter);
                     break Token::LocalLabel(ident);
                 } else {
                     match ident {
@@ -648,25 +680,25 @@ fn advance<'a>(input: &mut Input) -> Result<(), Error> {
                 }
             }
             '@' => {
-                let beg = input.next_off;
-                if !matches!(input.next_char, 'a'..='z') {
-                    return error_at(input.next_off, "expected identifier");
+                let beg = iter.off;
+                if !matches!(iter.char, 'a'..='z') {
+                    return error_at(iter.off, "expected identifier");
                 }
-                read_char(input);
-                read_ident(input);
-                let ident = &input.source[beg..input.next_off];
+                read_char(iter);
+                read_ident(iter);
+                let ident = &source[beg..iter.off];
                 break Token::MacroArg(ident);
             }
             '"' => {
-                let beg = input.next_off;
-                while input.next_char != '"' {
-                    if input.next_off == input.source.len() {
-                        return error_at(input.next_off, "unterminated string");
+                let beg = iter.off;
+                while iter.char != '"' {
+                    if iter.off == source.len() {
+                        return error_at(iter.off, "unterminated string");
                     }
-                    read_char(input);
+                    read_char(iter);
                 }
-                let s = &input.source[beg..input.next_off];
-                read_char(input); // closing '"'
+                let s = &source[beg..iter.off];
+                read_char(iter); // closing '"'
                 break Token::String(s);
             }
             ',' => break Token::Comma,
@@ -686,30 +718,30 @@ fn advance<'a>(input: &mut Input) -> Result<(), Error> {
             '}' => break Token::RightBrace,
             '<' => {
                 let mut count = 1;
-                while input.next_char == '<' {
+                while iter.char == '<' {
                     count += 1;
-                    read_char(input);
+                    read_char(iter);
                 }
                 break Token::LessThan(count);
             }
             '>' => {
                 let mut count = 1;
-                while input.next_char == '>' {
+                while iter.char == '>' {
                     count += 1;
-                    read_char(input);
+                    read_char(iter);
                 }
                 break Token::GreaterThan(count);
             }
             ' ' | '\t' => continue,
             ';' => {
-                read_char(input);
-                while input.next_char != '\n' && input.next_off != input.source.len() {
-                    read_char(input);
+                read_char(iter);
+                while iter.char != '\n' && iter.off != source.len() {
+                    read_char(iter);
                 }
                 continue;
             }
             _ => {
-                if char == '\0' && off == input.source.len() {
+                if char == '\0' && off == source.len() {
                     break Token::EOF;
                 } else {
                     break Token::Error;
@@ -718,9 +750,7 @@ fn advance<'a>(input: &mut Input) -> Result<(), Error> {
         }
     };
 
-    input.at = input.beg + off;
-    input.token = tag;
-    Ok(())
+    Ok((token, off + beg))
 }
 
 fn match_token(tag: Token, input: &mut Input) -> Result<bool, Error> {
@@ -746,8 +776,6 @@ fn match_argument<'a>(
     label: &'a str,
     anon_labels: &[i64],
     constants: &HashMap<&str, i64>,
-    macro_params: &[&str],
-    macro_args: &[Arg<'a>],
 ) -> Result<Option<Arg<'a>>, Error> {
     if let Token::Ident(ident) = input.token {
         let off = input.at;
@@ -825,16 +853,6 @@ fn match_argument<'a>(
             local: name,
         };
         return Ok(Some(Arg::Label((label, at))));
-    }
-
-    if let Token::MacroArg(name) = input.token {
-        advance(input)?;
-        for (idx, &param) in macro_params.iter().enumerate() {
-            if name == param {
-                return Ok(Some(macro_args[idx].clone()));
-            }
-        }
-        return error_at(at, "parameter does not exist");
     }
 
     Ok(None)
@@ -1168,21 +1186,26 @@ fn is_valid32(val: i64) -> bool {
 fn asm_source<'a>(
     input: &'a str,
     beg: usize,
-    params: &[&str],
-    args: &[Arg<'a>],
+    params: Vec<&'a str>,
+    args: Vec<&'a str>,
     ctx: &mut Context<'a>,
 ) -> Result<(), Error> {
     let mut input = Input {
-        next_char: '\0',
-        next_off: 0,
-        iter: input.char_indices(),
+        iter: InputIter {
+            char: '\0',
+            off: 0,
+            iter: input.char_indices(),
+        },
         token: Token::EOF,
-        source: input,
         at: 0,
+        tokens: Vec::new(),
+        source: input,
         beg,
+        args,
+        params,
     };
 
-    read_char(&mut input);
+    read_char(&mut input.iter);
     advance(&mut input)?;
 
     let mut macros = HashMap::<&str, Macro>::new();
@@ -1190,45 +1213,12 @@ fn asm_source<'a>(
     loop {
         match input.token {
             Token::Ident(ident) => {
-                if let Some(r#macro) = macros.get(ident) {
-                    let at = input.at;
-                    advance(&mut input)?;
-
-                    let mut args = Vec::new();
-                    let params = r#macro.args.as_slice();
-
-                    if let Some(arg) = match_argument(
-                        &mut input,
-                        ctx.curr_label,
-                        &ctx.anon_labels,
-                        &ctx.constants,
-                        params,
-                        &args,
-                    )? {
-                        args.push(arg);
-                        while match_token(Token::Comma, &mut input)? {
-                            if let Some(arg) = match_argument(
-                                &mut input,
-                                ctx.curr_label,
-                                &ctx.anon_labels,
-                                &ctx.constants,
-                                params,
-                                &args,
-                            )? {
-                                args.push(arg);
-                            } else {
-                                return error_at(input.at, "expected argument after ','");
-                            }
-                        }
-                    }
-
-                    if args.len() != params.len() {
-                        return error_at(at, "number of arguments doesn't match number of macro params");
-                    }
-
-                    asm_source(r#macro.source, r#macro.beg, params, &args, ctx)?;
+                if let Some(mcr) = macros.get(ident) {
+                    let params = mcr.params.as_slice().to_vec();
+                    let args = asm_macro(&mut input, mcr)?;
+                    asm_source(mcr.source, mcr.beg, params, args, ctx)?;
                 } else {
-                    asm_instruction(ident, &mut input, ctx, params, args)?;
+                    asm_instruction(ident, &mut input, ctx)?;
                 }
             }
             Token::Label(name) => {
@@ -1297,8 +1287,6 @@ fn asm_instruction<'a>(
     mnemonic: &str,
     input: &mut Input<'a>,
     ctx: &mut Context<'a>,
-    params: &[&str],
-    args: &[Arg<'a>],
 ) -> Result<(), Error> {
     let at = input.at;
     advance(input)?;
@@ -1307,13 +1295,13 @@ fn asm_instruction<'a>(
     let mut arg2 = Arg::None;
     let mut arg3 = Arg::None;
 
-    if let Some(arg) = match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants, params, args)?
+    if let Some(arg) = match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants)?
     {
         arg1 = arg;
 
         if match_token(Token::Comma, input)? {
             if let Some(arg) =
-                match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants, params, args)?
+                match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants)?
             {
                 arg2 = arg;
             } else {
@@ -1322,7 +1310,7 @@ fn asm_instruction<'a>(
 
             if match_token(Token::Comma, input)? {
                 if let Some(arg) =
-                    match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants, params, args)?
+                    match_argument(input, ctx.curr_label, &ctx.anon_labels, &mut ctx.constants)?
                 {
                     arg3 = arg;
                 } else {
@@ -1510,6 +1498,42 @@ fn asm_directive<'a>(
     Ok(())
 }
 
+fn asm_macro<'a>(input: &mut Input<'a>, mcr: &Macro) -> Result<Vec<&'a str>, Error> {
+    let at = input.at;
+    advance(input)?;
+
+    let mut args = Vec::new();
+
+    if !matches!(input.token, Token::EOF | Token::NewLine) {
+        loop {
+            let beg = input.at;
+
+            while !matches!(input.token, Token::EOF | Token::NewLine | Token::Comma) {
+                advance(input)?;
+            }
+
+            let arg = &input.source[beg..input.at];
+            if arg.is_empty() {
+                return error_at(beg, "expected macro argument");
+            }
+            args.push(arg);
+
+            if !match_token(Token::Comma, input)? {
+                break;
+            }
+        }
+    }
+
+    if args.len() != mcr.params.len() {
+        return error_at(
+            at,
+            "number of arguments doesn't match number of macro params",
+        );
+    }
+
+    Ok(args)
+}
+
 fn asm_macro_def<'a>(input: &mut Input<'a>) -> Result<(&'a str, Macro<'a>), Error> {
     let Token::Ident(name) = input.token else {
         return error_at(input.at, "expected macro name");
@@ -1524,7 +1548,7 @@ fn asm_macro_def<'a>(input: &mut Input<'a>) -> Result<(&'a str, Macro<'a>), Erro
 
     expect_token(Token::LeftBrace, input, "expected '{'")?;
 
-    let beg = input.next_off;
+    let beg = input.iter.off;
     let source;
 
     loop {
@@ -1538,7 +1562,14 @@ fn asm_macro_def<'a>(input: &mut Input<'a>) -> Result<(&'a str, Macro<'a>), Erro
         advance(input)?;
     }
 
-    Ok((name, Macro { source, args, beg }))
+    Ok((
+        name,
+        Macro {
+            source,
+            params: args,
+            beg,
+        },
+    ))
 }
 
 fn error_at<T>(at: usize, msg: &'static str) -> Result<T, Error> {

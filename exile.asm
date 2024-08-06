@@ -57,6 +57,13 @@
   syscall
 }
 
+.macro write_pixel dst rgb {
+  mov m32 [@dst], @rgb
+  mov m32 [@dst+4], @rgb
+  mov m32 [@dst+screen_pitch], @rgb
+  mov m32 [@dst+screen_pitch+4], @rgb
+}
+
 read_xauthority_cookie:
   mov rsi, [rsp]          ; get number of command line args
   lea rsi, [rsp+rsi*8+16] ; get address of first environment var
@@ -422,10 +429,7 @@ draw_text:
 : xor ecx, ecx ; x counter
 : test al, 1
   jz >
-  mov m32 [rdi+rcx*8], ebp
-  mov m32 [rdi+rcx*8+4], ebp
-  mov m32 [rdi+rcx*8+screen_pitch], ebp
-  mov m32 [rdi+rcx*8+screen_pitch+4], ebp
+  write_pixel rdi+rcx*8, ebp
 : shr eax, 1
   inc ecx
   cmp ecx, 3
@@ -497,10 +501,7 @@ draw_sprite:
   mov edi, 0x000000
   cmp ebp, 0x2
   cmove esi, edi
-  mov m32 [rdx], esi
-  mov m32 [rdx+4], esi
-  mov m32 [rdx+screen_pitch], esi
-  mov m32 [rdx+screen_pitch+4], esi
+  write_pixel rdx, esi
 : inc r9d
   cmp r9d, 12
   jne >
@@ -544,10 +545,7 @@ draw_sprite_negative:
   mov edi, 0x000000
   cmp ebp, 0x1
   cmove esi, edi
-  mov m32 [rdx], esi
-  mov m32 [rdx+4], esi
-  mov m32 [rdx+screen_pitch], esi
-  mov m32 [rdx+screen_pitch+4], esi
+  write_pixel rdx, esi
 : inc r9d
   cmp r9d, 12
   jne >
@@ -626,10 +624,7 @@ draw_tile:
   mov ebp, 0xffffff
   test eax, 1
   cmovnz r8d, ebp
-  mov m32 [rdi], r8d
-  mov m32 [rdi+4], r8d
-  mov m32 [rdi+screen_pitch], r8d
-  mov m32 [rdi+screen_pitch+4], r8d
+  write_pixel rdi, r8d
   add rdi, 8
   dec edx
   jnz >

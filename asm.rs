@@ -305,7 +305,7 @@ enum Op {
 }
 
 const REGS8: [&str; 16] = [
-    "al", "cl", "dl", "bl", "", "", "", "", "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b",
+    "al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil", "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b",
     "r15b",
 ];
 
@@ -925,13 +925,14 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 99] = [
+    static INSNS: [Insn; 100] = [
         insn("add",     RM32,  R32,     None,    0,      false, &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,     None,    REX_W,  false, &[0x01],       0, Enc::MR),
         insn("add",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       0, Enc::MI),
         insn("add",     RM64,  Imm8sx,  None,    REX_W,  false, &[0x83],       0, Enc::MI),
         insn("add",     RM32,  Imm32,   None,    0,      false, &[0x81],       0, Enc::MI),
         insn("add",     RM64,  Imm32sx, None,    REX_W,  false, &[0x81],       0, Enc::MI),
+        insn("add",     R8,    RM8,     None,    0,      false, &[0x02],       0, Enc::RM),
         insn("and",     RM8,   Imm8,    None,    0,      false, &[0x80],       4, Enc::MI),
         insn("and",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       4, Enc::MI),
         insn("call",    Rel32, None,    None,    0,      false, &[0xe8],       0, Enc::D),
@@ -1848,6 +1849,12 @@ fn emit_insn<'a>(
     ctx.out.h66 = insn.h66;
 
     let off = ctx.out.data.len();
+
+    if let &Arg::Reg8(reg) = arg2 {
+        if reg >= 4 && reg <= 7 {
+            ctx.out.rex |= REX_B as u32;
+        }
+    }
 
     unsafe {
         ctx.out

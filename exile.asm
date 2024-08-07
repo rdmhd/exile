@@ -20,6 +20,7 @@
 
 .def ef_triggered 1 << 0
 .def ef_hurt      1 << 1
+.def ef_stunned   1 << 2
 
 .def em_hp   0b00001111
 .def em_type 0b11110000
@@ -31,6 +32,11 @@
 .def entity_char    1 << 4
 .def entity_crawler 2 << 4
 
+.def char_hp    5
+.def crawler_hp 2
+
+.def ab_dash 1
+
 .def max_entities 8
 .def max_enemies  3 ; must be <= max_entities - 2
 
@@ -40,6 +46,9 @@
 .def room_max_dim 3
 
 .def fov_distance 6
+
+.def ui_x 3
+.def ui_y screen_height/2 - 5 - 3
 
 .macro sys_write fd addr size {
   mov eax, 1
@@ -144,6 +153,14 @@
   inc @reg
   cmp @reg, @limit
   jl @dst
+}
+
+.macro screen_offset dst x y {
+  lea @dst, [screen]
+  shl @x, 3
+  imul @y, @y, screen_pitch * 2
+  add @dst, @x
+  add @dst, @y
 }
 
 read_xauthority_cookie:
@@ -285,7 +302,7 @@ main_loop:
 : movzx ebx, m8 [rsi+rdx*4+e_data]
   tjmp.z ebx, em_type, >
 
-  and m8 [rsi+rdx*4+e_flags], ~ef_hurt
+  and m8 [rsi+rdx*4+e_flags], ~(ef_hurt | ef_stunned)
 
   and ebx, em_hp
   cjmp.g ebx, 0, >
@@ -355,7 +372,17 @@ process_keydown:
   cjmp.e eax, 0x6f, .move_up    ; is it up arrow key
   cjmp.e eax, 0x2d, .move_up    ; is it 'k' key
 
-  cjmp.ne eax, 0x60, > ; is it 'f12' key
+  cjmp.ne eax, 0x42, >          ; is it escape key
+  mov m8 [selected_ability], 0
+  call draw_ui
+  jmp refresh_screen
+
+: cjmp.ne eax, 0x26, >          ; is it 'a' key
+  mov m8 [selected_ability], ab_dash
+  call draw_ui
+  jmp refresh_screen
+
+: cjmp.ne eax, 0x60, > ; is it 'f12' key
   not m8 [debugmode]
   call clear_screen
   call draw_world
@@ -418,11 +445,12 @@ draw_number:
   inc r9d
   cjmp.nz eax, <
 
-  lea r10, [screen]
-  imul ebx, ebx, 4
-  imul ecx, ecx, screen_pitch
-  add r10, rbx
-  add r10, rcx
+  ; lea r10, [screen]
+  ; imul ebx, ebx, 4
+  ; imul ecx, ecx, screen_pitch
+  ; add r10, rbx
+  ; add r10, rcx
+  screen_offset r10, rbx, rcx
 
 : movzx edx, m8 [rsp+r9-1]
   lea rdi, [font]
@@ -447,12 +475,7 @@ draw_number:
 draw_text:
   .push r8 r9
 
-  lea rdi, [screen]
-  imul ebx, ebx, screen_width
-  add eax, ebx
-  shl eax, 2
-  add rdi, rax
-
+  screen_offset rdi, rax, rbx
   mov r9, rdi
   mov ebp, ecx
 
@@ -654,6 +677,29 @@ draw_tile:
   .pop
   ret
 
+; x: eax, y: ebx, corner: ecx
+draw_cursor:
+  ; lea rdx, [screen]
+  ; shl eax, 3
+  ; imul ebx, ebx, screen_pitch * 2
+  ; add rdx, rax
+  ; add rdx, rbx
+  screen_offset rdx, rax, rbx
+
+  lea rsi, [cursor]
+  movzx ecx, m16 [rsi+rcx*2]
+
+  xor ebx, ebx ; y counter
+: xor eax, eax ; x counter
+: tjmp.z ecx, 1, >
+  write_pixel rdx+rax*8, 0xffffff
+: shr ecx, 1
+  icjmp.l eax, 4, <<
+  add rdx, screen_pitch*2
+  icjmp.l ebx, 4, <<<
+
+  ret
+
 ; x0: eax, y0: ebx, x1: ecx, y1: edx, color: esi
 draw_rect:
   lea rdi, [screen]
@@ -750,8 +796,8 @@ draw_ui:
 : mov m64 [rax+rbx*8], 0
   icjmp.l ebx, (screen_pitch * tile_size)/8, <
 
-  mov eax, 8
-  mov ebx, screen_height - 18
+  mov eax, ui_x
+  mov ebx, ui_y
   mov ecx, 0xffffff
   lea rdx, [str_hp]
   mov esi, 2
@@ -759,11 +805,37 @@ draw_ui:
 
   movzx eax, m8 [entities+4+e_data]
   and eax, em_hp
-  mov ebx, 32
-  mov ecx, screen_height - 18
+  mov ebx, ui_x + 12
+  mov ecx, ui_y
   mov edx, 0xffffff
   call draw_number
-  ret
+
+  mov eax, ui_x + 12 + 4*8
+  mov ebx, ui_y
+  mov ecx, 0xffffff
+  lea rdx, [str_dash]
+  mov esi, 4
+  call draw_text
+
+  cjmp.ne m8 [selected_ability], 1, >
+  mov eax, ui_x + 12 + 4*8 - 2
+  mov ebx, ui_y - 2
+  xor ecx, ecx
+  call draw_cursor
+  mov eax, ui_x + 12 + 4*8 + 4*4 - 3
+  mov ebx, ui_y - 2
+  mov ecx, 1
+  call draw_cursor
+  mov eax, ui_x + 12 + 4*8 - 2
+  mov ebx, ui_y + 3
+  mov ecx, 2
+  call draw_cursor
+  mov eax, ui_x + 12 + 4*8 + 4*4 - 3
+  mov ebx, ui_y + 3
+  mov ecx, 3
+  call draw_cursor
+
+: ret
 
 ; @ebx: delta x
 ; @ecx: delta y
@@ -773,15 +845,19 @@ move_char:
 
   mov m8 [do_timer], 0
 
-  cjmp.ne m64 [timer], 0, >>               ; prevent movement when timer is active
-  tjmp.z m8 [entities+4+e_data], em_hp, >> ; prevent movement when char has 0 hp
+  cjmp.ne m64 [timer], 0, >>>               ; prevent action when timer is active
+  tjmp.z m8 [entities+4+e_data], em_hp, >>> ; prevent action when char has 0 hp
 
-  mov edx, 1
+  cjmp.ne m8 [selected_ability], ab_dash, >
+  call use_dash
+  jmp >>
+
+: mov edx, 1
   call move_entity
-  cjmp.z eax, >>
+
+: cjmp.z eax, >>
   cjmp.e eax, 0xff, >
   call damage_entity
-  mov m8 [do_timer], 1
 
 : call simulate_entities
   call redraw_tilemap
@@ -796,6 +872,55 @@ move_char:
   ;call draw_distbuf
 : mov eax, 1
 : add rsp, 16
+  ret
+
+; @ebx: delta x
+; @ecx: delta y
+; -> if used: eax
+use_dash:
+  .push r8
+  xor eax, eax
+
+  movzx esi, m8 [char+e_xpos]
+  movzx edi, m8 [char+e_ypos]
+  lea rdx, [tilemap]
+
+  ; store original char tilemap offset
+  imul r8d, edi, map_width
+  add r8d, esi
+
+  ; compute new char tilemap offset
+  add esi, ebx
+  add edi, ecx
+  imul rbp, rdi, map_width
+  add rbp, rsi
+
+  tjmp.z m8 [rdx+rbp], tm_walkable, >>
+  tjmp.nz m8 [rdx+rbp], tm_entity, >>
+
+  ; move char onto the new tile
+  mov [char+e_xpos], sil
+  mov [char+e_ypos], dil
+  and m8 [rdx+r8], ~tm_entity
+  or m8 [rdx+rbp], 1 << tm_entity_shift
+
+  ; if the next tile contains an enemy, it will be damaged and stunned
+  add esi, ebx
+  add edi, ecx
+  imul ebp, edi, map_width
+  add ebp, esi
+  movzx eax, m8 [rdx+rbp]
+  and eax, tm_entity
+  jz >
+  lea rbx, [entities]
+  shr eax, tm_entity_shift
+  or m8 [rbx+rax*4+e_flags], ef_stunned
+  call damage_entity
+
+: mov m8 [selected_ability], 0
+  mov eax, 0xff
+
+: .pop
   ret
 
 ; delta x: ebx, delta y: ecx, id: edx
@@ -859,8 +984,8 @@ simulate_entities:
   lea r9, [entities]
 
 .next:
-  movzx eax, m8 [r9+r8*4+e_data]
-  tjmp.z eax, em_type, >>
+  tjmp.z m8 [r9+r8*4+e_data], em_type, >>
+  tjmp.nz m8 [r9+r8*4+e_flags], ef_stunned, >>
 
   call compute_distances
 
@@ -979,6 +1104,7 @@ damage_entity:
   and edx, ~em_hp
   or ecx, edx
   mov [rbx+rax*4+e_data], cl
+  mov m8 [do_timer], 1
   ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx, maxdist: esi
@@ -1406,11 +1532,11 @@ place_entities:
 
   ; set entity type/hp and clear flags
   lea rax, [entities]
-  mov m8 [rax+4+e_data], entity_char | 10
+  mov m8 [rax+4+e_data], entity_char | char_hp
   mov m8 [rax+4+e_flags], 0
 
   mov ebx, 2
-: mov m8 [rax+rbx*4+e_data], entity_crawler | 3
+: mov m8 [rax+rbx*4+e_data], entity_crawler | crawler_hp
   mov m8 [rax+rbx*4+e_flags], 0
   icjmp.l ebx, max_enemies + 2, <
 
@@ -1724,6 +1850,8 @@ sprites:
   .i32 0x00000000 0x560000a8 0x09558002 0x00099600 0x5a0009a6 0x02a98002 0x5809a560 0xa96025a5 0x0aaa8026
   .i32 0x00000000 0x00000000 0x002a0000 0x60009580 0x5a600255 0x02556002 0x98099998 0xa6a009a6 0x00080002
 
+cursor: .i16 0x111f 0x888f 0xf111 0xf888
+
 font:
   .i16 0x7fff
   .i16 0x7b6f 0x749a 0x73e7 0x79e7 0x49ed 0x79cf 0x7bcf 0x4927 0x7bef 0x49ef 0x5f6f 0x3beb
@@ -1743,7 +1871,9 @@ rng_state: .i32 0
 sockfd: .i32 0
 
 ; each entity has x, y, type/hp and flags
-entities: .res max_entities*4
+entities: .res 4
+char: .res 4
+.res (max_entities-2)*4
 
 tilemap: .res screen_width * screen_height
 
@@ -1755,7 +1885,10 @@ do_timer: .i8 0
 
 debugmode: .i8 0
 
+selected_ability: .i8 0
+
 str_hp: .i8 "hp"
+str_dash: .i8 "dash"
 
 put_image:
   .i8 72             ; opcode

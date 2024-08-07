@@ -130,7 +130,6 @@ enum Token<'a> {
     Label(&'a str),
     LocalLabel(&'a str),
     AnonLabel,
-    LabelTarget(LabelName<'a>),
     LocalLabelTarget(&'a str),
     Comma,
     NewLine,
@@ -548,7 +547,7 @@ fn advance<'a>(input: &mut Input) -> Result<(), Error> {
                         let (token, at) = input.tokens.remove(0);
                         input.token = token;
                         input.at = at;
-                        return Ok(())
+                        return Ok(());
                     }
                 }
                 return error_at(input.at, "unknown macro argument");
@@ -569,7 +568,7 @@ fn next_token<'a>(
     let mut off;
 
     fn read_ident(iter: &mut InputIter) {
-        while matches!(iter.char, 'a'..='z' | '0' ..='9' | '_') {
+        while matches!(iter.char, 'a'..='z' | '0' ..='9' | '_' | '.') {
             read_char(iter);
         }
     }
@@ -587,15 +586,6 @@ fn next_token<'a>(
                 if iter.char == ':' {
                     read_char(iter);
                     break Token::Label(ident);
-                } else if iter.char == '.' {
-                    read_char(iter);
-                    let beg = iter.off;
-                    read_ident(iter);
-                    let local = &source[beg..iter.off];
-                    break Token::LabelTarget(LabelName {
-                        global: ident,
-                        local,
-                    });
                 } else {
                     match ident {
                         "m8" => break Token::Mem8,
@@ -790,13 +780,7 @@ fn match_argument<'a>(
             }
             return Ok(Some(Arg::Imm(val)));
         } else {
-            return Ok(Some(Arg::Label((
-                LabelName {
-                    global: ident,
-                    local: "",
-                },
-                off,
-            ))));
+            return Ok(Some(Arg::Label((label_from_identifier(ident), off))));
         }
     }
 
@@ -1730,8 +1714,6 @@ fn parse_address<'a>(
     let mut disp: i64 = 0;
 
     loop {
-        let at = input.at;
-
         if let Token::Ident(ident) = input.token {
             let ident_at = input.at;
             advance(input)?;
@@ -1794,13 +1776,7 @@ fn parse_address<'a>(
                     return error_at(input.at, "overflow");
                 };
             } else {
-                label = Some((
-                    LabelName {
-                        global: ident,
-                        local: "",
-                    },
-                    ident_at,
-                ));
+                label = Some((label_from_identifier(ident), ident_at));
             }
         } else if let Token::Int(int) = input.token {
             disp = if let Some(disp) = disp.checked_add(int) {
@@ -1809,9 +1785,6 @@ fn parse_address<'a>(
                 return error_at(input.at, "overflow");
             };
             advance(input)?;
-        } else if let Token::LabelTarget(name) = input.token {
-            advance(input)?;
-            label = Some((name, at));
         } else {
             return error_at(input.at, "expected address component");
         }
@@ -1850,6 +1823,17 @@ fn parse_address<'a>(
         disp,
         label,
     })
+}
+
+fn label_from_identifier(ident: &str) -> LabelName {
+    if let Some((global, local)) = ident.split_once('.') {
+        LabelName { global, local }
+    } else {
+        LabelName {
+            global: ident,
+            local: "",
+        }
+    }
 }
 
 fn emit_insn<'a>(

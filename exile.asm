@@ -64,54 +64,54 @@
   mov m32 [@dst+screen_pitch+4], @rgb
 }
 
-.macro cxchg_le a b {
+.macro cxchg.le a b {
   cmp @a, @b
   jle >
   xchg @a, @b
 :
 }
 
-.macro cjmp_e a b dst {
+.macro cjmp.e a b dst {
   cmp @a, @b
   je @dst
 }
 
-.macro cjmp_ne a b dst {
+.macro cjmp.ne a b dst {
   cmp @a, @b
   jne @dst
 }
 
-.macro cjmp_g a b dst {
+.macro cjmp.g a b dst {
   cmp @a, @b
   jg @dst
 }
 
-.macro cjmp_l a b dst {
+.macro cjmp.l a b dst {
   cmp @a, @b
   jl @dst
 }
 
-.macro cjmp_ae a b dst {
+.macro cjmp.ae a b dst {
   cmp @a, @b
   jae @dst
 }
 
-.macro cjmp_z r dst {
+.macro cjmp.z r dst {
   test @r, @r
   jz @dst
 }
 
-.macro cjmp_nz r dst {
+.macro cjmp.nz r dst {
   test @r, @r
   jnz @dst
 }
 
-.macro tjmp_z a b dst {
+.macro tjmp.z a b dst {
   test @a, @b
   jz @dst
 }
 
-.macro tjmp_nz a b dst {
+.macro tjmp.nz a b dst {
   test @a, @b
   jnz @dst
 }
@@ -134,13 +134,13 @@
 }
 
 ; TODO: this could use a better name
-.macro djmp_nz reg dst {
+.macro dcjmp.nz reg dst {
   dec @reg
   jnz @dst
 }
 
 ; TODO: this could use a better name
-.macro icjmp_l reg limit dst {
+.macro icjmp.l reg limit dst {
   inc @reg
   cmp @reg, @limit
   jl @dst
@@ -153,13 +153,13 @@ read_xauthority_cookie:
 : mov rcx, [rsi]          ; tested env variable
   ; zero means end of env var array
   ; if there is no $XAUTHORITY go straight to opening a connection
-  cjmp_z ecx, open_connection
+  cjmp.z ecx, open_connection
   add rsi, 8
   xor edx, edx               ; loop counter
 : mov al, [rcx+rdx]          ; read character from tested var
-  cjmp_ne al, [rbx+rdx], <<  ; compare it to the xauth string
+  cjmp.ne al, [rbx+rdx], <<  ; compare it to the xauth string
   inc edx
-  cjmp_ne edx, 11, <         ; reached end of xauth string?
+  cjmp.ne edx, 11, <         ; reached end of xauth string?
 
   lea rdi, [rcx+rdx]
   mov eax, 2 ; open
@@ -202,7 +202,7 @@ sys_write r12d, [conn_request], 48
 sub rsp, 8276 ; TODO: should get this from the response
 sys_read r12d, rsp, 8276
 
-cjmp_e m8 [rsp], 0, exit_error ; zero first byte of the reply indicates connection failure
+cjmp.e m8 [rsp], 0, exit_error ; zero first byte of the reply indicates connection failure
 
 ; store gc id
 mov eax, [rsp+12]
@@ -276,19 +276,19 @@ main_loop:
   mov [time], rax
 
   ; check if the timer was active and if it ran out
-  cjmp_e m64 [timer], 0, >>>
-  cjmp_l rax, [timer], >>>
+  cjmp.e m64 [timer], 0, >>>
+  cjmp.l rax, [timer], >>>
 
   ; update entities
   lea rsi, [entities]
   mov edx, 1
 : movzx ebx, m8 [rsi+rdx*4+e_data]
-  tjmp_z ebx, em_type, >
+  tjmp.z ebx, em_type, >
 
   and m8 [rsi+rdx*4+e_flags], ~ef_hurt
 
   and ebx, em_hp
-  cjmp_g ebx, 0, >
+  cjmp.g ebx, 0, >
   ; entity is out of hp
   mov m8 [rsi+rdx*4+e_data], 0
 
@@ -300,7 +300,7 @@ main_loop:
   lea rcx, [tilemap]
   and m8 [rcx+rax], ~tm_entity
 
-: icjmp_l edx, max_entities, <<
+: icjmp.l edx, max_entities, <<
 
   mov m64 [timer], 0
 
@@ -323,20 +323,20 @@ main_loop:
   mov esi, 1
   mov rdx, 5
   syscall
-  cjmp_e eax, 0, main_loop
+  cjmp.e eax, 0, main_loop
 
 ; read event
   sys_read ebx, rsp, 32
   movzx eax, m8 [rsp] ; load event id
-  cjmp_e eax, 2, process_keydown ; keypress event?
-  cjmp_e eax, 12, refresh_screen ; expose event?
-  cjmp_ne eax, 161, main_loop ; what is this event?
+  cjmp.e eax, 2, process_keydown ; keypress event?
+  cjmp.e eax, 12, refresh_screen ; expose event?
+  cjmp.ne eax, 161, main_loop ; what is this event?
   mov eax, [rsp+8]
   mov ebx, [change_wm_protocols.property]
-  cjmp_ne eax, ebx, main_loop
+  cjmp.ne eax, ebx, main_loop
   mov eax, [rsp+12]
   mov ebx, [change_wm_protocols.value]
-  cjmp_ne eax, ebx, main_loop
+  cjmp.ne eax, ebx, main_loop
   jmp exit
 
 refresh_screen:
@@ -345,23 +345,23 @@ refresh_screen:
 
 process_keydown:
   movzx eax, m8 [rsp+1] ; read keycode
-  cjmp_e eax, 0x18, exit        ; is it 'Q'
-  cjmp_e eax, 0x72, .move_right ; is it right arrow key
-  cjmp_e eax, 0x2e, .move_right ; is it 'l' key
-  cjmp_e eax, 0x74, .move_down  ; is it down arrow key
-  cjmp_e eax, 0x2c, .move_down  ; is it 'j' key
-  cjmp_e eax, 0x71, .move_left  ; is it left arrow key
-  cjmp_e eax, 0x2b, .move_left  ; is it 'h' key
-  cjmp_e eax, 0x6f, .move_up    ; is it up arrow key
-  cjmp_e eax, 0x2d, .move_up    ; is it 'k' key
+  cjmp.e eax, 0x18, exit        ; is it 'Q'
+  cjmp.e eax, 0x72, .move_right ; is it right arrow key
+  cjmp.e eax, 0x2e, .move_right ; is it 'l' key
+  cjmp.e eax, 0x74, .move_down  ; is it down arrow key
+  cjmp.e eax, 0x2c, .move_down  ; is it 'j' key
+  cjmp.e eax, 0x71, .move_left  ; is it left arrow key
+  cjmp.e eax, 0x2b, .move_left  ; is it 'h' key
+  cjmp.e eax, 0x6f, .move_up    ; is it up arrow key
+  cjmp.e eax, 0x2d, .move_up    ; is it 'k' key
 
-  cjmp_ne eax, 0x60, > ; is it 'f12' key
+  cjmp.ne eax, 0x60, > ; is it 'f12' key
   not m8 [debugmode]
   call clear_screen
   call draw_world
   jmp refresh_screen
 
-: cjmp_ne eax, 0x1b, main_loop ; is it 'r' key
+: cjmp.ne eax, 0x1b, main_loop ; is it 'r' key
   call clear_map
   call generate_map
   call clear_screen
@@ -371,25 +371,25 @@ process_keydown:
   mov ebx, 1
   xor ecx, ecx
   call move_char
-  cjmp_z eax, main_loop
+  cjmp.z eax, main_loop
   jmp refresh_screen
 .move_down:
   xor ebx, ebx
   mov ecx, 1
   call move_char
-  cjmp_z eax, main_loop
+  cjmp.z eax, main_loop
   jmp refresh_screen
 .move_left:
   mov ebx, -1
   xor ecx, ecx
   call move_char
-  cjmp_z eax, main_loop
+  cjmp.z eax, main_loop
   jmp refresh_screen
 .move_up:
   xor ebx, ebx
   mov ecx, -1
   call move_char
-  cjmp_z eax, main_loop
+  cjmp.z eax, main_loop
   jmp refresh_screen
 
 exit_error:
@@ -416,7 +416,7 @@ draw_number:
   div esi
   mov [rsp+r9], dl
   inc r9d
-  cjmp_nz eax, <
+  cjmp.nz eax, <
 
   lea r10, [screen]
   imul ebx, ebx, 4
@@ -430,14 +430,14 @@ draw_number:
   mov rdi, r10
   xor ebx, ebx ; y counter
 : xor ecx, ecx ; x counter
-: tjmp_z dl, 1, >
+: tjmp.z dl, 1, >
   write_pixel rdi+rcx*8, r8d
 : shr edx, 1
-  icjmp_l ecx, 3, <<
+  icjmp.l ecx, 3, <<
   add rdi, screen_pitch*2
-  icjmp_l ebx, 5, <<<
+  icjmp.l ebx, 5, <<<
   add r10, 4 * 8
-  djmp_nz r9d, <<<<
+  dcjmp.nz r9d, <<<<
 
   add rsp, 8
   .pop
@@ -469,15 +469,15 @@ draw_text:
   mov rdi, r9
   xor ebx, ebx ; y counter
 : xor ecx, ecx ; x counter
-: tjmp_z al, 1, >
+: tjmp.z al, 1, >
   write_pixel rdi+rcx*8, ebp
 : shr eax, 1
-  icjmp_l ecx, 3, <<
+  icjmp.l ecx, 3, <<
   add rdi, screen_pitch*2
-  icjmp_l ebx, 5, <<<
+  icjmp.l ebx, 5, <<<
 .next:
   add r9, 8*4
-  icjmp_l r8d, esi, <<<<
+  icjmp.l r8d, esi, <<<<
 
   .pop
   ret
@@ -488,7 +488,7 @@ draw_distbuf:
   xor r9d, r9d ; y counter
 : xor r8d, r8d ; x counter
 : movzx eax, m8 [r10]
-  cjmp_z eax, >
+  cjmp.z eax, >
   cmp eax, 0xff
   jge >
   mov ebx, r8d
@@ -498,8 +498,8 @@ draw_distbuf:
   mov edx, 0xff00ab
   call draw_number
 : inc r10
-  icjmp_l r8d, map_width, <<
-  icjmp_l r9d, map_height, <<<
+  icjmp.l r8d, map_width, <<
+  icjmp.l r9d, map_height, <<<
   .pop
   ret
 
@@ -533,13 +533,13 @@ draw_sprite:
   cmove esi, edi
   write_pixel rdx, esi
 : inc r9d
-  cjmp_ne r9d, 12, >
+  cjmp.ne r9d, 12, >
   add rdx, (screen_width * 2 - tile_size) * 4
   xor r9d, r9d
 : add rdx, 8
   shr eax, 2
-  djmp_nz ebx, <<<
-  icjmp_l r8d, 9, <<<<
+  dcjmp.nz ebx, <<<
+  icjmp.l r8d, 9, <<<<
 
   .pop
   ret
@@ -573,13 +573,13 @@ draw_sprite_negative:
   cmove esi, edi
   write_pixel rdx, esi
 : inc r9d 
-  cjmp_ne r9d, 12, >
+  cjmp.ne r9d, 12, >
   add rdx, (screen_width * 2 - tile_size) * 4
   xor r9d, r9d
 : add rdx, 8
   shr eax, 2
-  djmp_nz ebx, <<<
-  icjmp_l r8d, 9, <<<<
+  dcjmp.nz ebx, <<<
+  icjmp.l r8d, 9, <<<<
 
   .pop
   ret
@@ -594,17 +594,17 @@ draw_entity:
   movzx ebx, m8 [r10+e_ypos]
   movzx ecx, m8 [r10+e_data]
   shr ecx, 4
-  cjmp_z ecx, .done
+  cjmp.z ecx, .done
   dec ecx
-  tjmp_z m8 [r10+e_flags], ef_hurt, >
+  tjmp.z m8 [r10+e_flags], ef_hurt, >
   call draw_sprite_negative
   jmp >>
 : mov edx, 0xffffff
   call draw_sprite
 
-: cjmp_e m8 [debugmode], 0, .done
+: cjmp.e m8 [debugmode], 0, .done
   ; draw triggered indicator
-  tjmp_z m8 [r10+e_flags], ef_triggered, >
+  tjmp.z m8 [r10+e_flags], ef_triggered, >
   movzx ebx, m8 [r10+e_xpos]
   movzx ecx, m8 [r10+e_ypos]
   mov edx, 0xff0000
@@ -644,13 +644,13 @@ draw_tile:
   cmovnz r8d, ebp
   write_pixel rdi, r8d
   add rdi, 8
-  djmp_nz edx, >
+  dcjmp.nz edx, >
   add rdi, screen_pitch*2 - tile_size*4
   mov edx, 12
 : shr eax, 1
-  djmp_nz ebx, <<
+  dcjmp.nz ebx, <<
   add rsi, 2
-  djmp_nz ecx, <<<
+  dcjmp.nz ecx, <<<
   .pop
   ret
 
@@ -662,9 +662,9 @@ draw_rect:
   mov ebp, eax
 : mov eax, ebp
 : mov [rdi+rax*4], esi
-  icjmp_l eax, ecx, <
+  icjmp.l eax, ecx, <
   add rdi, screen_pitch
-  icjmp_l ebx, edx, <<
+  icjmp.l ebx, edx, <<
   ret
 
 draw_tilemap:
@@ -679,8 +679,8 @@ draw_tilemap:
   mov ebx, r9d
   mov ecx, r10d
   call draw_tile
-: icjmp_l r9d, map_width, <<
-  icjmp_l r10d, map_height, <<<
+: icjmp.l r9d, map_width, <<
+  icjmp.l r10d, map_height, <<<
   .pop
   ret
 
@@ -691,13 +691,13 @@ redraw_tilemap:
 : xor r9d, r9d ; x counter
 : movzx r11d, m8 [r8]
   ;test r11b, tm_redraw
-  tjmp_z r11b, tm_walkable, >
+  tjmp.z r11b, tm_walkable, >
   mov eax, r11d
   and eax, tm_sprite
   mov ebx, r9d
   mov ecx, r10d
   call draw_tile
-  tjmp_z r11b, tm_entity, >
+  tjmp.z r11b, tm_entity, >
   mov eax, r11d
   and eax, tm_entity
   shr eax, tm_entity_shift
@@ -705,9 +705,9 @@ redraw_tilemap:
   and m8 [r8], ~tm_redraw
 : inc r8
   inc r9d
-  cjmp_ne r9d, map_width, <<
+  cjmp.ne r9d, map_width, <<
   inc r10d
-  cjmp_ne r10d, map_height, <<<
+  cjmp.ne r10d, map_height, <<<
   .pop
   ret
 
@@ -718,11 +718,11 @@ draw_world:
   lea r8, [entities]
   mov r9d, 1
 : mov eax, r9d
-  cjmp_e m8 [r8+r9*4+2], 0, >
+  cjmp.e m8 [r8+r9*4+2], 0, >
   call draw_entity
-: icjmp_l r9d, max_entities, <<
+: icjmp.l r9d, max_entities, <<
 
-  cjmp_e m8 [debugmode], 0, >
+  cjmp.e m8 [debugmode], 0, >
   mov eax, [map_seed]
   mov ebx, 4
   mov ecx, 4
@@ -739,7 +739,7 @@ clear_screen:
   lea rax, [screen]
   xor ebx, ebx
 : mov m64 [rax+rbx*8], 0
-  icjmp_l ebx, (screen_width * screen_height * 4)/8, <
+  icjmp.l ebx, (screen_width * screen_height * 4)/8, <
   ret
 
 draw_ui:
@@ -748,7 +748,7 @@ draw_ui:
   add rax, map_height * tile_size * screen_pitch
   xor ebx, ebx
 : mov m64 [rax+rbx*8], 0
-  icjmp_l ebx, (screen_pitch * tile_size)/8, <
+  icjmp.l ebx, (screen_pitch * tile_size)/8, <
 
   mov eax, 8
   mov ebx, screen_height - 18
@@ -773,13 +773,13 @@ move_char:
 
   mov m8 [do_timer], 0
 
-  cjmp_ne m64 [timer], 0, >>               ; prevent movement when timer is active
-  tjmp_z m8 [entities+4+e_data], em_hp, >> ; prevent movement when char has 0 hp
+  cjmp.ne m64 [timer], 0, >>               ; prevent movement when timer is active
+  tjmp.z m8 [entities+4+e_data], em_hp, >> ; prevent movement when char has 0 hp
 
   mov edx, 1
   call move_entity
-  cjmp_z eax, >>
-  cjmp_e eax, 0xff, >
+  cjmp.z eax, >>
+  cjmp.e eax, 0xff, >
   call damage_entity
   mov m8 [do_timer], 1
 
@@ -788,7 +788,7 @@ move_char:
   call draw_ui
 
   ; start the timer if necessary
-  cjmp_ne m8 [do_timer], 1, >
+  cjmp.ne m8 [do_timer], 1, >
   mov rax, [time]
   add rax, 150 * 1000000
   mov [timer], rax
@@ -820,14 +820,14 @@ move_entity:
   imul edi, ecx, map_width
   add edi, ebx
 
-  tjmp_z m8 [rsi+rdi], tm_walkable, >
+  tjmp.z m8 [rsi+rdi], tm_walkable, >
 
   ; check if the tile is occupied by another entity
   ; TODO: this is probably only useful to char movement
   movzx eax, m8 [rsi+rdi]
   and eax, tm_entity
   shr eax, tm_entity_shift
-  cjmp_nz eax, >
+  cjmp.nz eax, >
 
   ; store new entity coords
   mov [r10+0], bl
@@ -860,14 +860,14 @@ simulate_entities:
 
 .next:
   movzx eax, m8 [r9+r8*4+e_data]
-  tjmp_z eax, em_type, >>
+  tjmp.z eax, em_type, >>
 
   call compute_distances
 
   movzx eax, m8 [r9+r8*4+e_xpos]
   movzx ebx, m8 [r9+r8*4+e_ypos]
   call char_visible
-  cjmp_nz eax, >
+  cjmp.nz eax, >
   and m8 [r9+r8*4+e_flags], ~ef_triggered
   mov ebx, r8d
   call move_randomly
@@ -875,7 +875,7 @@ simulate_entities:
 : or m8 [r9+r8*4+e_flags], ef_triggered
   mov ebx, r8d
   call move_towards_char
-: icjmp_l r8d, max_entities, .next
+: icjmp.l r8d, max_entities, .next
   .pop
   ret
 
@@ -884,15 +884,15 @@ move_randomly:
   xor eax, eax
   mov ebx, 4
   call random_int
-  cjmp_ne eax, 0, >
+  cjmp.ne eax, 0, >
   mov ebx, 1
   xor ecx, ecx
   jmp .move
-: cjmp_ne eax, 1, >
+: cjmp.ne eax, 1, >
   mov ebx, -1
   xor ecx, ecx
   jmp .move
-: cjmp_ne eax, 2, >
+: cjmp.ne eax, 2, >
   xor ebx, ebx
   mov ecx, 1
   jmp .move
@@ -925,27 +925,27 @@ move_towards_char:
 
   ; check adjacent tiles and pick the one with best distance
 : movzx edx, m8 [rbx+1]
-  cjmp_ae edx, ecx, >
+  cjmp.ae edx, ecx, >
   mov ecx, edx
   mov esi, 1
   mov edi, 0
 : movzx edx, m8 [rbx-1]
-  cjmp_ae edx, ecx, >
+  cjmp.ae edx, ecx, >
   mov ecx, edx
   mov esi, -1
   mov edi, 0
 : movzx edx, m8 [rbx+map_width]
-  cjmp_ae edx, ecx, >
+  cjmp.ae edx, ecx, >
   mov ecx, edx
   mov esi, 0
   mov edi, 1
 : movzx edx, m8 [rbx-map_width]
-  cjmp_ae edx, ecx, >
+  cjmp.ae edx, ecx, >
   mov ecx, edx
   mov esi, 0
   mov edi, -1
-: cjmp_e ecx, 0xff, .done
-  cjmp_nz ecx, >
+: cjmp.e ecx, 0xff, .done
+  cjmp.nz ecx, >
 
   ; attack
   mov eax, 1
@@ -1036,7 +1036,7 @@ bresenham:
   add r11, rax
   add r11, r12
   movzx r12d, m8 [r11]
-  tjmp_nz r12b, tm_opaque, .done
+  tjmp.nz r12b, tm_opaque, .done
   ; hit char?
   and r12b, tm_entity
   cmp r12b, 1 << tm_entity_shift
@@ -1046,18 +1046,18 @@ bresenham:
   mov r11d, ebp
   add r11d, ebp
   ; if e2 >= dy
-  cjmp_l r11d, edi, >
-  cjmp_e eax, r8d, .done
+  cjmp.l r11d, edi, >
+  cjmp.e eax, r8d, .done
   add ebp, edi
   add eax, ecx
   dec r13d
   ; if e <= dx
-: cjmp_g r11d, esi, >
-  cjmp_e ebx, r9d, .done
+: cjmp.g r11d, esi, >
+  cjmp.e ebx, r9d, .done
   add ebp, esi
   add ebx, edx
   dec r13d
-: cjmp_l r13d, 0, .done
+: cjmp.l r13d, 0, .done
   jmp <<<
 
 .done:
@@ -1093,7 +1093,7 @@ char_visible:
 
   xor eax, eax
   add ecx, edx
-  cjmp_g ecx, fov_distance, .done
+  cjmp.g ecx, fov_distance, .done
 
   mov r10d, -fov_distance
 : mov eax, r8d
@@ -1104,7 +1104,7 @@ char_visible:
   add edx, fov_distance
   mov esi, fov_distance
   call bresenham
-  cjmp_nz eax, .done
+  cjmp.nz eax, .done
 
   mov eax, r8d
   mov ebx, r9d
@@ -1114,7 +1114,7 @@ char_visible:
   sub edx, fov_distance
   mov esi, fov_distance
   call bresenham
-  cjmp_nz eax, .done
+  cjmp.nz eax, .done
 
   mov eax, r8d
   mov ebx, r9d
@@ -1124,7 +1124,7 @@ char_visible:
   add edx, r10d
   mov esi, fov_distance
   call bresenham
-  cjmp_nz eax, .done
+  cjmp.nz eax, .done
 
   mov eax, r8d
   mov ebx, r9d
@@ -1134,7 +1134,7 @@ char_visible:
   add edx, r10d
   mov esi, fov_distance
   call bresenham
-  cjmp_nz eax, .done
+  cjmp.nz eax, .done
 
   inc r10d
   cmp r10d, fov_distance
@@ -1158,7 +1158,7 @@ compute_distances:
   ; reset distbuf
   xor edx, edx
 : mov m8 [rcx+rdx], 0xff
-  icjmp_l edx, map_width * map_height, <
+  icjmp.l edx, map_width * map_height, <
 
   ; push initial coords
   imul ebx, ebx, map_width
@@ -1179,9 +1179,9 @@ compute_distances:
   ; [1, 0]
   mov edx, eax
   inc edx
-  tjmp_z m8 [rsi+rdx], tm_walkable, >
-  tjmp_nz m8 [rsi+rdx], tm_entity, >
-  cjmp_ae bl, [rcx+rdx], >
+  tjmp.z m8 [rsi+rdx], tm_walkable, >
+  tjmp.nz m8 [rsi+rdx], tm_entity, >
+  cjmp.ae bl, [rcx+rdx], >
   mov [rcx+rdx], bl
   mov [rsp+rdi*4+0], dx
   mov [rsp+rdi*4+2], bl
@@ -1190,9 +1190,9 @@ compute_distances:
   ; [-1, 0]
 : mov edx, eax
   dec rdx
-  tjmp_z m8 [rsi+rdx], tm_walkable, >
-  tjmp_nz m8 [rsi+rdx], tm_entity, >
-  cjmp_ae bl, [rcx+rdx], >
+  tjmp.z m8 [rsi+rdx], tm_walkable, >
+  tjmp.nz m8 [rsi+rdx], tm_entity, >
+  cjmp.ae bl, [rcx+rdx], >
   mov [rcx+rdx], bl
   mov [rsp+rdi*4+0], dx
   mov [rsp+rdi*4+2], bl
@@ -1201,9 +1201,9 @@ compute_distances:
   ; [0, 1]
 : mov edx, eax
   add edx, map_width
-  tjmp_z m8 [rsi+rdx], tm_walkable, >
-  tjmp_nz m8 [rsi+rdx], tm_entity, >
-  cjmp_ae bl, [rcx+rdx], >
+  tjmp.z m8 [rsi+rdx], tm_walkable, >
+  tjmp.nz m8 [rsi+rdx], tm_entity, >
+  cjmp.ae bl, [rcx+rdx], >
   mov [rcx+rdx], bl
   mov [rsp+rdi*4+0], dx
   mov [rsp+rdi*4+2], bl
@@ -1212,15 +1212,15 @@ compute_distances:
   ; [0, -1]
 : mov edx, eax
   sub rdx, map_width
-  tjmp_z m8 [rsi+rdx], tm_walkable, >
-  tjmp_nz m8 [rsi+rdx], tm_entity, >
-  cjmp_ae bl, [rcx+rdx], >
+  tjmp.z m8 [rsi+rdx], tm_walkable, >
+  tjmp.nz m8 [rsi+rdx], tm_entity, >
+  cjmp.ae bl, [rcx+rdx], >
   mov [rcx+rdx], bl
   mov [rsp+rdi*4+0], dx
   mov [rsp+rdi*4+2], bl
   inc edi
 
-: cjmp_nz edi, .next
+: cjmp.nz edi, .next
 
   add rsp, 64*4
   ret
@@ -1255,7 +1255,7 @@ clear_map:
   lea rax, [tilemap]
   xor ebx, ebx
 : mov m32 [rax+rbx*4], 0
-  icjmp_l ebx, map_width * map_height / 4, <
+  icjmp.l ebx, map_width * map_height / 4, <
   ret
 
 generate_map:
@@ -1279,10 +1279,10 @@ generate_map:
   lea rcx, [rsp]
   mov edx, r8d
   call room_placeable
-  cjmp_nz eax, >
+  cjmp.nz eax, >
   inc r8d
-  cjmp_e r8d, max_rooms, .rooms_generated
-: djmp_nz r9d, <<
+  cjmp.e r8d, max_rooms, .rooms_generated
+: dcjmp.nz r9d, <<
 
 .rooms_generated:
   ; place rooms
@@ -1293,12 +1293,12 @@ generate_map:
   movzx ecx, m8 [rsp+r9*4+2]
   movzx edx, m8 [rsp+r9*4+3]
   call place_room
-  icjmp_l r9d, r8d, .place_next
+  icjmp.l r9d, r8d, .place_next
 
   ; connect rooms
   mov r9, rsp
 .next_connection:
-  cjmp_l r8d, 2, .rooms_connected
+  cjmp.l r8d, 2, .rooms_connected
 
   ; get center coords for first room
   movzx eax, m8 [r9+0]
@@ -1337,15 +1337,15 @@ generate_map:
   add r9, map_width
 .next_tile:
   lea rax, [r9+r8]
-  cjmp_ne m8 [rax], 0, >
-  tjmp_z m8 [rax-map_width], tm_walkable, >
+  cjmp.ne m8 [rax], 0, >
+  tjmp.z m8 [rax-map_width], tm_walkable, >
   mov m8 [r9+r8], tile_cliff
-: icjmp_l r8d, (map_width - 1) * map_height, .next_tile
+: icjmp.l r8d, (map_width - 1) * map_height, .next_tile
 
   ; randomly place walls
   mov r10d, 1000
   mov r9d, max_walls
-: cjmp_z r10d, .done
+: cjmp.z r10d, .done
 
   mov eax, 1
   mov ebx, map_width - 2
@@ -1361,10 +1361,10 @@ generate_map:
   lea rbx, [tilemap]
   add rbx, rax
   dec r10d
-  cjmp_ne m8 [rbx], 0, <
-  tjmp_z m8 [rbx+map_width], tm_walkable, <
+  cjmp.ne m8 [rbx], 0, <
+  tjmp.z m8 [rbx+map_width], tm_walkable, <
   mov m8 [rbx], tile_wall | tm_opaque
-  djmp_nz r9d, <
+  dcjmp.nz r9d, <
 
 .done:
   add rsp, max_rooms * 4
@@ -1391,8 +1391,8 @@ place_entities:
   add ecx, r10d
 
   ; should be walkable and not have an entity
-  tjmp_z m8 [rbx+rcx], tm_walkable, <
-  tjmp_nz m8 [rbx+rcx], tm_entity, <
+  tjmp.z m8 [rbx+rcx], tm_walkable, <
+  tjmp.nz m8 [rbx+rcx], tm_entity, <
 
   ; add entity id to tile
   mov edx, r9d
@@ -1402,7 +1402,7 @@ place_entities:
   mov [r8+e_xpos], r10b
   mov [r8+e_ypos], al
   add r8, 4
-  icjmp_l r9d, max_enemies + 2, <
+  icjmp.l r9d, max_enemies + 2, <
 
   ; set entity type/hp and clear flags
   lea rax, [entities]
@@ -1412,7 +1412,7 @@ place_entities:
   mov ebx, 2
 : mov m8 [rax+rbx*4+e_data], entity_crawler | 3
   mov m8 [rax+rbx*4+e_flags], 0
-  icjmp_l ebx, max_enemies + 2, <
+  icjmp.l ebx, max_enemies + 2, <
 
   .pop
   ret
@@ -1453,8 +1453,8 @@ random_room:
   add r10d, r8d
   add r11d, r9d
 
-  cxchg_le r8d, r10d ; if x0 > x1, swap them
-  cxchg_le r9d, r11d ; if y0 > y1, swap them
+  cxchg.le r8d, r10d ; if x0 > x1, swap them
+  cxchg.le r9d, r11d ; if y0 > y1, swap them
   ; store the room in the rooms array
   mov [r12+0], r8b
   mov [r12+1], r9b
@@ -1474,9 +1474,9 @@ room_placeable:
 : mov rbx, r8
   mov rcx, r9
   call room_intersects
-  cjmp_nz eax, >
+  cjmp.nz eax, >
   add r9, 4
-  djmp_nz r10d, <
+  dcjmp.nz r10d, <
   xor r11d, r11d
 : mov eax, r11d
   .pop
@@ -1489,36 +1489,36 @@ room_intersects:
   ; ax0 > bx1?
   movzx edx, m8 [rbx]
   movzx edi, m8 [rcx+2]
-  cjmp_g edx, edi, >
+  cjmp.g edx, edi, >
   ; ax1 < bx0?
   movzx edx, m8 [rbx+2]
   movzx edi, m8 [rcx]
   dec edi
-  cjmp_l edx, edi, >
+  cjmp.l edx, edi, >
   ; ay0 > by1?
   movzx edx, m8 [rbx+1]
   movzx edi, m8 [rcx+3]
-  cjmp_g edx, edi, >
+  cjmp.g edx, edi, >
   ; ay1 < by0?
   movzx edx, m8 [rbx+3]
   movzx edi, m8 [rcx+1]
   dec edi
-  cjmp_l edx, edi, >
+  cjmp.l edx, edi, >
   mov eax, 1
 : ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx
 place_room:
-  cxchg_le eax, ecx ; if x0 > x1, swap them
-  cxchg_le ebx, edx ; if y0 > y1, swap them
+  cxchg.le eax, ecx ; if x0 > x1, swap them
+  cxchg.le ebx, edx ; if y0 > y1, swap them
 : lea rsi, [tilemap]
   imul edi, ebx, map_width
   add rsi, rdi
 : mov edi, eax
 : mov m8 [rsi+rdi], 1 | tm_walkable
-  icjmp_l edi, ecx, <
+  icjmp.l edi, ecx, <
   add rsi, map_width
-  icjmp_l ebx, edx, <<
+  icjmp.l ebx, edx, <<
   ret
 
 ; x0: eax, y0: ebx, x1: ecx, y1: edx
@@ -1567,7 +1567,7 @@ place_connection_horz:
   add ebx, edx
 : mov m8 [rsi+rax], 1 | tm_walkable
   add eax, edx
-  cjmp_ne eax, ebx, <
+  cjmp.ne eax, ebx, <
   ret
 
 ; y0: eax, y1: ebx, x: ecx
@@ -1579,7 +1579,7 @@ place_connection_vert:
   imul rbx, rbx, map_width
   add rax, rsi
   add rbx, rsi
-  cxchg_le rax, rbx ; if p1 > p2, swap them
+  cxchg.le rax, rbx ; if p1 > p2, swap them
 : mov m8 [rax], 1 | tm_walkable
   add rax, map_width
   cmp rax, rbx

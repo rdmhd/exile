@@ -163,6 +163,13 @@
   add @dst, @y
 }
 
+.macro cursor_rect x y w h {
+  mov eax, @x - 2
+  mov ebx, @y - 2
+  mov ecx, @w + 2 - 3
+  mov edx, @h + 2 - 2
+}
+
 read_xauthority_cookie:
   mov rsi, [rsp]          ; get number of command line args
   lea rsi, [rsp+rsi*8+16] ; get address of first environment var
@@ -677,29 +684,6 @@ draw_tile:
   .pop
   ret
 
-; x: eax, y: ebx, corner: ecx
-draw_cursor:
-  ; lea rdx, [screen]
-  ; shl eax, 3
-  ; imul ebx, ebx, screen_pitch * 2
-  ; add rdx, rax
-  ; add rdx, rbx
-  screen_offset rdx, rax, rbx
-
-  lea rsi, [cursor]
-  movzx ecx, m16 [rsi+rcx*2]
-
-  xor ebx, ebx ; y counter
-: xor eax, eax ; x counter
-: tjmp.z ecx, 1, >
-  write_pixel rdx+rax*8, 0xffffff
-: shr ecx, 1
-  icjmp.l eax, 4, <<
-  add rdx, screen_pitch*2
-  icjmp.l ebx, 4, <<<
-
-  ret
-
 ; x0: eax, y0: ebx, x1: ecx, y1: edx, color: esi
 draw_rect:
   lea rdi, [screen]
@@ -790,11 +774,10 @@ clear_screen:
 
 draw_ui:
   ; clear part of screen that is covered by ui
-  lea rax, [screen]
-  add rax, map_height * tile_size * screen_pitch
+  lea rax, [screen+map_height*tile_size*screen_pitch]
   xor ebx, ebx
 : mov m64 [rax+rbx*8], 0
-  icjmp.l ebx, (screen_pitch * tile_size)/8, <
+  icjmp.l ebx, (screen_pitch*tile_size)/8, <
 
   mov eax, ui_x
   mov ebx, ui_y
@@ -818,24 +801,69 @@ draw_ui:
   call draw_text
 
   cjmp.ne m8 [selected_ability], 1, >
-  mov eax, ui_x + 12 + 4*8 - 2
-  mov ebx, ui_y - 2
-  xor ecx, ecx
-  call draw_cursor
-  mov eax, ui_x + 12 + 4*8 + 4*4 - 3
-  mov ebx, ui_y - 2
-  mov ecx, 1
-  call draw_cursor
-  mov eax, ui_x + 12 + 4*8 - 2
-  mov ebx, ui_y + 3
-  mov ecx, 2
-  call draw_cursor
-  mov eax, ui_x + 12 + 4*8 + 4*4 - 3
-  mov ebx, ui_y + 3
-  mov ecx, 3
+  cursor_rect ui_x + 12 + 4*8, ui_y, 4*4, 5
   call draw_cursor
 
 : ret
+
+; x: eax, y: ebx, w: ecx, h: edx
+draw_cursor:
+  .push r8
+
+  mov r8d, eax
+  screen_offset rsi, rax, rbx
+  mov rbp, m64 [cursor]
+  mov rdi, rsi
+  shl ecx, 3
+  imul rdx, rdx, screen_pitch*2
+
+  ; top-left corner
+  xor ebx, ebx ; y counter
+: xor eax, eax ; x counter
+: tjmp.z ebp, 1, >
+  write_pixel rdi+rax*8, 0xffffff
+: shr rbp, 1
+  icjmp.l eax, 4, <<
+  add rdi, screen_pitch*2
+  icjmp.l ebx, 4, <<<
+
+  ; top-right corner
+  mov rdi, rsi
+  add rdi, rcx
+  xor ebx, ebx ; y counter
+: xor eax, eax ; x counter
+: tjmp.z ebp, 1, >
+  write_pixel rdi+rax*8, 0xffffff
+: shr rbp, 1
+  icjmp.l eax, 4, <<
+  add rdi, screen_pitch*2
+  icjmp.l ebx, 4, <<<
+
+  ; bottom-left corner
+  add rsi, rdx
+  mov rdi, rsi
+  xor ebx, ebx ; y counter
+: xor eax, eax ; x counter
+: tjmp.z ebp, 1, >
+  write_pixel rdi+rax*8, 0xffffff
+: shr rbp, 1
+  icjmp.l eax, 4, <<
+  add rdi, screen_pitch*2
+  icjmp.l ebx, 4, <<<
+
+  ; bottom-right corner
+  add rsi, rcx
+  xor ebx, ebx ; y counter
+: xor eax, eax ; x counter
+: tjmp.z ebp, 1, >
+  write_pixel rsi+rax*8, 0xffffff
+: shr rbp, 1
+  icjmp.l eax, 4, <<
+  add rsi, screen_pitch*2
+  icjmp.l ebx, 4, <<<
+
+  .pop
+  ret
 
 ; @ebx: delta x
 ; @ecx: delta y
@@ -845,8 +873,8 @@ move_char:
 
   mov m8 [do_timer], 0
 
-  cjmp.ne m64 [timer], 0, >>>               ; prevent action when timer is active
-  tjmp.z m8 [entities+4+e_data], em_hp, >>> ; prevent action when char has 0 hp
+  cjmp.ne m64 [timer], 0, >>>>               ; prevent action when timer is active
+  tjmp.z m8 [entities+4+e_data], em_hp, >>>> ; prevent action when char has 0 hp
 
   cjmp.ne m8 [selected_ability], ab_dash, >
   call use_dash

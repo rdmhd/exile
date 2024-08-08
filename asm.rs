@@ -925,7 +925,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 100] = [
+    static INSNS: [Insn; 101] = [
         insn("add",     RM32,  R32,     None,    0,      false, &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,     None,    REX_W,  false, &[0x01],       0, Enc::MR),
         insn("add",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       0, Enc::MI),
@@ -1013,6 +1013,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("shl",     RM32,  Imm8,    None,    0,      false, &[0xc1],       4, Enc::MI),
         insn("shl",     RM64,  Imm8,    None,    REX_W,  false, &[0xc1],       4, Enc::MI),
         insn("shr",     RM32,  One,     None,    0,      false, &[0xd1],       5, Enc::M1),
+        insn("shr",     RM64,  One,     None,    REX_W,  false, &[0xd1],       5, Enc::M1),
         insn("shr",     RM32,  Imm8,    None,    0,      false, &[0xc1],       5, Enc::MI),
         insn("sub",     RM32,  R32,     None,    0,      false, &[0x29],       0, Enc::MR),
         insn("sub",     RM64,  R64,     None,    REX_W,  false, &[0x29],       0, Enc::MR),

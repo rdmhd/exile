@@ -387,7 +387,7 @@ fn main() {
         exit(1);
     }
 
-    let size = (out.len() - 120) as u64;
+    let size = out.len() as u64;
     unsafe {
         (out.as_mut_ptr().offset(96) as *mut u64).write_unaligned(size); // update p_filesz field
         (out.as_mut_ptr().offset(104) as *mut u64).write_unaligned(size); // update p_memsz field

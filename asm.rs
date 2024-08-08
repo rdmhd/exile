@@ -925,7 +925,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
     use self::Op::*;
 
     #[rustfmt::skip]
-    static INSNS: [Insn; 101] = [
+    static INSNS: [Insn; 105] = [
         insn("add",     RM32,  R32,     None,    0,      false, &[0x01],       0, Enc::MR),
         insn("add",     RM64,  R64,     None,    REX_W,  false, &[0x01],       0, Enc::MR),
         insn("add",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       0, Enc::MI),
@@ -954,6 +954,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("cmp",     RM64,  Imm8sx,  None,    REX_W,  false, &[0x83],       7, Enc::MI),
         insn("cmp",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       7, Enc::MI),
         insn("cmp",     RM32,  Imm32,   None,    0,      false, &[0x81],       7, Enc::MI),
+        insn("dec",     RM8,   None,    None,    0,      false, &[0xfe],       1, Enc::M),
         insn("dec",     RM32,  None,    None,    0,      false, &[0xff],       1, Enc::M),
         insn("dec",     RM64,  None,    None,    REX_W,  false, &[0xff],       1, Enc::M),
         insn("div",     RM32,  None,    None,    0,      false, &[0xf7],       6, Enc::M),
@@ -961,6 +962,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("imul",    R32,   RM32,    Imm8sx,  0,      false, &[0x6b],       0, Enc::RMI),
         insn("imul",    R32,   RM32,    Imm32,   0,      false, &[0x69],       0, Enc::RMI),
         insn("imul",    R64,   RM64,    Imm32sx, REX_W,  false, &[0x69],       0, Enc::RMI),
+        insn("inc",     RM8,   None,    None,    0,      false, &[0xfe],       0, Enc::M),
         insn("inc",     RM32,  None,    None,    0,      false, &[0xff],       0, Enc::M),
         insn("inc",     RM64,  None,    None,    REX_W,  false, &[0xff],       0, Enc::M),
         insn("int3",    None,  None,    None,    0,      false, &[0xcc],       0, Enc::ZO),
@@ -1015,6 +1017,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("shr",     RM32,  One,     None,    0,      false, &[0xd1],       5, Enc::M1),
         insn("shr",     RM64,  One,     None,    REX_W,  false, &[0xd1],       5, Enc::M1),
         insn("shr",     RM32,  Imm8,    None,    0,      false, &[0xc1],       5, Enc::MI),
+        insn("sub",     RM8,   Imm8,    None,    0,      false, &[0x80],       5, Enc::MI),
         insn("sub",     RM32,  R32,     None,    0,      false, &[0x29],       0, Enc::MR),
         insn("sub",     RM64,  R64,     None,    REX_W,  false, &[0x29],       0, Enc::MR),
         insn("sub",     RM32,  Imm8sx,  None,    0,      false, &[0x83],       5, Enc::MI),
@@ -1022,6 +1025,7 @@ fn choose_insn(mnemonic: &str, arg1: &Arg, arg2: &Arg, arg3: &Arg) -> Option<&'s
         insn("sub",     R64,   RM64,    None,    REX_W,  false, &[0x2b],       0, Enc::RM),
         insn("syscall", None,  None,    None,    0,      false, &[0x0f, 0x05], 0, Enc::ZO),
         insn("test",    RM8,   Imm8,    None,    0,      false, &[0xf6],       0, Enc::MI),
+        insn("test",    RM8,   R8,      None,    0,      false, &[0x84],       0, Enc::MR),
         insn("test",    RM32,  Imm32,   None,    0,      false, &[0xf7],       0, Enc::MI),
         insn("test",    RM32,  R32,     None,    0,      false, &[0x85],       0, Enc::MR),
         insn("test",    Eax,   Imm32,   None,    0,      false, &[0xa9],       0, Enc::I2),

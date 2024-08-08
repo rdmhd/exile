@@ -38,6 +38,9 @@
 .def ab_dash 1
 .def ab_push 2
 
+.def ap_cost_push 2
+.def ap_decay 5
+
 .def max_entities 8
 .def max_enemies  5 ; must be <= max_entities - 2
 
@@ -391,6 +394,7 @@ process_keydown:
   call draw_ui
   jmp refresh_screen
 : cjmp.ne eax, 0x27, >          ; is it 's' key
+  cjmp.l m8 [ap], ap_cost_push, >
   mov m8 [selected_ability], ab_push
   call draw_ui
   jmp refresh_screen
@@ -402,6 +406,7 @@ process_keydown:
   jmp refresh_screen
 
 : cjmp.ne eax, 0x1b, main_loop ; is it 'r' key
+  mov m8 [ap], 0
   call clear_map
   call generate_map
   call clear_screen
@@ -822,24 +827,40 @@ draw_ui:
   mov edx, 0xffffff
   call draw_number
 
-  mov eax, ui_x + 12 + 4*8
+  mov eax, ui_x + 6*4
+  mov ebx, ui_y
+  mov ecx, 0xffffff
+  lea rdx, [str_ap]
+  mov esi, 2
+  call draw_text
+
+  movzx eax, m8 [ap]
+  mov ebx, ui_x + 9*4
+  mov ecx, ui_y
+  mov edx, 0xffffff
+  call draw_number
+
+  mov eax, ui_x + 24 + 4*8
   mov ebx, ui_y
   mov ecx, 0xffffff
   lea rdx, [str_dash]
   mov esi, 4
   call draw_text
   cjmp.ne m8 [selected_ability], ab_dash, >
-  cursor_rect ui_x + 12 + 4*8, ui_y, 4*4, 5
+  cursor_rect ui_x + 24 + 4*8, ui_y, 4*4, 5
   call draw_cursor
 
-: mov eax, ui_x + 12 + 4*8 + 8*4
+: mov eax, ui_x + 24 + 4*8 + 8*4
   mov ebx, ui_y
+  mov edi, 0x666666
   mov ecx, 0xffffff
+  cmp m8 [ap], ap_cost_push
+  cmovl ecx, edi
   lea rdx, [str_push]
   mov esi, 4
   call draw_text
   cjmp.ne m8 [selected_ability], ab_push, >
-  cursor_rect ui_x + 12 + 4*8 + 8*4, ui_y, 4*4, 5
+  cursor_rect ui_x + 24 + 4*8 + 8*4, ui_y, 4*4, 5
   call draw_cursor
 
 : ret
@@ -924,10 +945,27 @@ move_char:
   jmp .moved
 : mov edx, 1
   call move_entity
+  cjmp.ne eax, 0xff, .moved
+
+  ; first try to decrease decay counter
+  mov bl, [ap_decay_counter]
+  cjmp.z bl, >
+  dec bl
+  mov [ap_decay_counter], bl
+  jmp .moved
+
+  ; if decay counter is zero, start decreasing ability points
+: mov bl, m8 [ap]
+  test bl, bl
+  jz >
+  dec bl
+  mov [ap], bl
 
 .moved:
   cjmp.z eax, >>
   cjmp.e eax, 0xff, >
+  inc m8 [ap]
+  mov m8 [ap_decay_counter], 3
   call damage_entity
 : call simulate_entities
   call redraw_tilemap
@@ -986,6 +1024,9 @@ use_dash:
   shr eax, tm_entity_shift
   or m8 [rbx+rax*4+e_flags], ef_stunned
   call damage_entity
+
+  inc m8 [ap]
+  mov m8 [ap_decay_counter], ap_decay
 
 : mov m8 [selected_ability], 0
   mov eax, 0xff
@@ -1077,6 +1118,7 @@ use_push:
   call damage_entity
 
 : mov m8 [selected_ability], 0
+  sub m8 [ap], ap_cost_push
   mov eax, 0xff
   .pop
   ret
@@ -2045,8 +2087,11 @@ do_timer: .i8 0
 debugmode: .i8 0
 
 selected_ability: .i8 0
+ap: .i8 0
+ap_decay_counter: .i8 0
 
 str_hp: .i8 "hp"
+str_ap: .i8 "ap"
 str_dash: .i8 "dash"
 str_push: .i8 "push"
 

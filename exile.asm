@@ -1144,6 +1144,7 @@ simulate_entities:
 .next:
   tjmp.z m8 [r9+r8*4+e_data], em_type, >>
   tjmp.nz m8 [r9+r8*4+e_flags], ef_stunned, >>
+  tjmp.z m8 [r9+r8*4+e_data], em_hp, >>
 
   call compute_distances
 

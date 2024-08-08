@@ -32,20 +32,22 @@
 .def entity_char    1 << 4
 .def entity_crawler 2 << 4
 
-.def char_hp    5
+.def char_hp    3
 .def crawler_hp 2
 
 .def ab_dash 1
+.def ab_push 2
 
 .def max_entities 8
-.def max_enemies  3 ; must be <= max_entities - 2
+.def max_enemies  5 ; must be <= max_entities - 2
 
-.def max_rooms    7 ; must be >= 2
-.def max_walls    20
+.def max_rooms    8 ; must be >= 2
+.def max_walls    30
 .def room_min_dim 2
 .def room_max_dim 3
 
 .def fov_distance 6
+.def push_range 4
 
 .def ui_x 3
 .def ui_y screen_height/2 - 5 - 3
@@ -388,6 +390,10 @@ process_keydown:
   mov m8 [selected_ability], ab_dash
   call draw_ui
   jmp refresh_screen
+: cjmp.ne eax, 0x27, >          ; is it 's' key
+  mov m8 [selected_ability], ab_push
+  call draw_ui
+  jmp refresh_screen
 
 : cjmp.ne eax, 0x60, > ; is it 'f12' key
   not m8 [debugmode]
@@ -718,16 +724,24 @@ redraw_tilemap:
   .push r8 r9 r10 r11
   lea r8, [tilemap]
   xor r10d, r10d ; y counter
-: xor r9d, r9d ; x counter
-: movzx r11d, m8 [r8]
+
+.loop_y:
+  xor r9d, r9d ; x counter
+.loop_x:
+  movzx r11d, m8 [r8]
   ;test r11b, tm_redraw
-  tjmp.z r11b, tm_walkable, >
+  ;tjmp.z r11b, tm_walkable, >
+  tjmp.z r11b, tm_sprite, >
   mov eax, r11d
   and eax, tm_sprite
   mov ebx, r9d
   mov ecx, r10d
   call draw_tile
-  tjmp.z r11b, tm_entity, >
+  jmp >>
+: mov eax, r9d
+  mov ebx, r10d
+  call clear_tile
+: tjmp.z r11b, tm_entity, >
   mov eax, r11d
   and eax, tm_entity
   shr eax, tm_entity_shift
@@ -735,10 +749,25 @@ redraw_tilemap:
   and m8 [r8], ~tm_redraw
 : inc r8
   inc r9d
-  cjmp.ne r9d, map_width, <<
+  cjmp.ne r9d, map_width, .loop_x
   inc r10d
-  cjmp.ne r10d, map_height, <<<
+  cjmp.ne r10d, map_height, .loop_y
   .pop
+  ret
+
+; x: eax, y: ebx
+clear_tile:
+  mov esi, eax
+  mov edi, eax
+  imul eax, eax, 12
+  imul ebx, ebx, 12
+  screen_offset rcx, rax, rbx
+  xor eax, eax
+: xor ebx, ebx
+: mov m32 [rcx+rbx*4], 0
+  icjmp.l ebx, tile_size, <
+  add rcx, screen_pitch
+  icjmp.l eax, tile_size, <<
   ret
 
 draw_world:
@@ -799,9 +828,18 @@ draw_ui:
   lea rdx, [str_dash]
   mov esi, 4
   call draw_text
-
-  cjmp.ne m8 [selected_ability], 1, >
+  cjmp.ne m8 [selected_ability], ab_dash, >
   cursor_rect ui_x + 12 + 4*8, ui_y, 4*4, 5
+  call draw_cursor
+
+: mov eax, ui_x + 12 + 4*8 + 8*4
+  mov ebx, ui_y
+  mov ecx, 0xffffff
+  lea rdx, [str_push]
+  mov esi, 4
+  call draw_text
+  cjmp.ne m8 [selected_ability], ab_push, >
+  cursor_rect ui_x + 12 + 4*8 + 8*4, ui_y, 4*4, 5
   call draw_cursor
 
 : ret
@@ -873,20 +911,24 @@ move_char:
 
   mov m8 [do_timer], 0
 
-  cjmp.ne m64 [timer], 0, >>>>               ; prevent action when timer is active
-  tjmp.z m8 [entities+4+e_data], em_hp, >>>> ; prevent action when char has 0 hp
+  cjmp.ne m64 [timer], 0, .done               ; prevent action when timer is active
+  tjmp.z m8 [entities+4+e_data], em_hp, .done ; prevent action when char has 0 hp
 
-  cjmp.ne m8 [selected_ability], ab_dash, >
+  ; select action (ability or move)
+  mov al, [selected_ability]
+  cjmp.ne al, ab_dash, >
   call use_dash
-  jmp >>
-
+  jmp .moved
+: cjmp.ne al, ab_push, >
+  call use_push
+  jmp .moved
 : mov edx, 1
   call move_entity
 
-: cjmp.z eax, >>
+.moved:
+  cjmp.z eax, >>
   cjmp.e eax, 0xff, >
   call damage_entity
-
 : call simulate_entities
   call redraw_tilemap
   call draw_ui
@@ -896,10 +938,10 @@ move_char:
   mov rax, [time]
   add rax, 150 * 1000000
   mov [timer], rax
-
-  ;call draw_distbuf
 : mov eax, 1
-: add rsp, 16
+
+.done:
+  add rsp, 16
   ret
 
 ; @ebx: delta x
@@ -949,6 +991,94 @@ use_dash:
   mov eax, 0xff
 
 : .pop
+  ret
+
+; @ebx: delta x
+; @ecx: delta y
+; -> if used: eax
+use_push:
+  .push r8 r9 r10 r11 r12 r13
+  xor eax, eax
+  xor r12d, r12d
+
+  lea r8, [tilemap]
+  lea r9, [entities]
+  movzx esi, m8 [char+e_xpos]
+  movzx edi, m8 [char+e_ypos]
+
+  mov edx, push_range
+.loop:
+  add esi, ebx
+  add edi, ecx
+  cjmp.l esi, 0, .done
+  cjmp.l edi, 0, .done
+
+  imul ebp, edi, map_width
+  add ebp, esi
+  movzx r10d, m8 [r8+rbp]
+  tjmp.z r10d, tm_entity, .next
+
+  ; get entity id
+  and r10d, tm_entity
+  shr r10d, tm_entity_shift
+
+  or m8 [r9+r10*4+e_flags], ef_stunned
+  mov m8 [do_timer], 1
+
+  ; compute new coords
+  add esi, ebx
+  add edi, ecx
+  imul r11d, edi, map_width
+  add r11d, esi
+
+  ; if the new tile is a wall, damage entity but don't move it
+  movzx eax, m8 [r8+r11]
+  and eax, tm_sprite
+  cjmp.ne eax, tile_wall, >
+  mov r12d, r10d
+  jmp .done
+
+  ; if the new tile contains an entity, don't move but damage both
+: movzx eax, m8 [r8+r11]
+  and eax, tm_entity
+  jz >
+  shr eax, tm_entity_shift
+  or m8 [r9+rax*4+e_flags], ef_stunned
+  mov r12d, r10d
+  mov r13d, eax
+  jmp .done
+
+  ; if the new tile is not walkable, kill the entity
+: tjmp.nz m8 [r8+r11], tm_walkable, >
+  and m8 [r9+r10*4+e_data], ~em_hp
+  or m8 [r9+r10*4+e_flags], ef_hurt
+
+  ; set new coords
+: mov [r9+r10*4+e_xpos], sil
+  mov [r9+r10*4+e_ypos], dil
+
+  ; remove entity from current tile
+  and m8 [r8+rbp], ~tm_entity
+
+  ; add entity to the new tile
+  shl r10d, tm_entity_shift
+  or [r8+r11], r10b
+  jmp .done
+
+.next:
+  dcjmp.nz edx, .loop
+
+.done:
+  cjmp.z r12d, >
+  mov eax, r12d
+  call damage_entity
+: cjmp.z r13d, >
+  mov eax, r13d
+  call damage_entity
+
+: mov m8 [selected_ability], 0
+  mov eax, 0xff
+  .pop
   ret
 
 ; delta x: ebx, delta y: ecx, id: edx
@@ -1917,6 +2047,7 @@ selected_ability: .i8 0
 
 str_hp: .i8 "hp"
 str_dash: .i8 "dash"
+str_push: .i8 "push"
 
 put_image:
   .i8 72             ; opcode
